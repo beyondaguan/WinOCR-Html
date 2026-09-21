@@ -988,6 +988,14 @@ def do_capture(root):
 
     # 4) 翻译（引擎由 translateEngine 决定：sf / mymemory / none）
     tr = ""
+    # 下面所有分支（空 OCR 提示 / 引擎选择 / 云端回退诊断）都要用这组值，
+    # 必须在分支判定前统一锁内读取 —— 放进某个分支里会让其他路径 NameError，
+    # 表现为 OCR 成功后浮窗静默不弹（daemon 线程异常无人可见）。
+    with SETTINGS_LOCK:
+        hotkey_hint = ACTIVE_HOTKEY or SETTINGS.get('hotkey') or '热键'
+        ocr_engine_hint = (SETTINGS.get("ocrEngine") or "local").lower()
+        te_hint = str(SETTINGS.get("translateEngine") or "sf").lower()
+        sf_key_hint = SETTINGS.get("sfKey")
     # 本地引擎正常跑完但没检出文字（选区是空白/纯图，或文字太小）→ ocr 是空串。
     # 绝不能拿空串去调翻译：实测 Qwen3 会把 system 提示词本身当成「原文」翻译成中文
     # 回填译文框（“你是一位专业的翻译人员……”），看起来像出了结果，其实是提示词泄漏，
@@ -995,16 +1003,10 @@ def do_capture(root):
     empty_ocr = (not failed) and not ocr.strip()
     if empty_ocr:
         ocr = "（未识别到文字）"
-        with SETTINGS_LOCK:
-            hotkey_hint = ACTIVE_HOTKEY or SETTINGS.get('hotkey') or '热键'
         tr = ("框选区域里没有检出文字。请重新按 %s 框选：尽量贴紧文字、不要带大片空白，"
               "细小文字可把区域框大一些再试。" % hotkey_hint.upper())
         if _LAST_LOCAL_ERR:
             tr += "\n详情：%s" % _LAST_LOCAL_ERR
-        with SETTINGS_LOCK:
-            ocr_engine_hint = (SETTINGS.get("ocrEngine") or "local").lower()
-            te_hint = str(SETTINGS.get("translateEngine") or "sf").lower()
-            sf_key_hint = SETTINGS.get("sfKey")
         if ocr_engine_hint == "local":
             tr += ('\n当前是本地离线 OCR，识别不出时不会自动问云端；若确认区内有清晰文字仍识别不出，'
                    '可在扩展选项（或 %s）里把 ocrEngine 改成 "sf"，用云端视觉模型再试。'

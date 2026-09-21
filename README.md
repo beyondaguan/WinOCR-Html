@@ -1,4 +1,4 @@
-# WinOCR-Html 0.7.5
+# WinOCR-Html 0.7.6
 
 浏览器内 + 其他软件阅读的 OCR/翻译工具壳。**第一性设计：工具是从属表面，绝不违反阅读焦点。**
 
@@ -424,6 +424,20 @@ python native_host/winocr_host.py --doctor
     prompt 当原文回译成中文），改为明确提示重新框选。
   - 验证：新增 `tests/_test_multi_instance.py`（3 实例选举 + 模拟全局按键逐个关闭，两轮全过）、
     `tests/_diag_capture.py`（抓屏/OCR 端到端诊断）。
+  - **质量加固重构**（CI 已接入 GitHub Actions）：`winocr_host.py` 拆出 `screenshot.py`
+    （ImageGrab 优先 + BitBlt 兜底）/ `translate.py`（SF + MyMemory）/ `shared_constants.json`
+    （模型别名与端点，宿主扩展共用）；SETTINGS 读写全部收进 `threading.RLock`；魔法数字提取
+    常量、裸 except 补日志；`py_compile` + `node --check` + 两个回归测试在 CI 自动跑。
+  - **修 OCR 成功后浮窗静默不弹**：拆分重构时把 `te_hint`/`sf_key_hint` 的读取挪进了
+    「未识别到文字」分支，OCR 成功的正常路径引用未定义变量 → daemon 线程 NameError 被吞
+    → 浮窗永不弹出。已在分支判定前统一锁内读取。
+  - **宿主退出提速**：多实例并存时解释器 shutdown（onnxruntime/tkinter 析构）可达 6-8s，
+    名册/热键/日志均已落盘后改 `os._exit(0)` 强退，Ctrl+Alt+Q 后进程即时消失。
+  - **使用须知**：扩展「重新加载」后，已打开的旧标签页里还是旧脚本（检测到重载自动停机），
+    划词不会弹翻译/记录按钮 —— **刷新页面（F5）即可**；新开标签页天生正常。
+    `chrome://` 设置页、商店页等特殊页面永远不注入。
+  - 验证补充：多实例回归测试修正 `alive()` 判定（OpenProcess 成功 ≠ 存活，改用
+    `GetExitCodeProcess` 判 STILL_ACTIVE）；NM 断管测试实测 0.1s 自行退出。
 
 - **0.7.5**（2026-09-20）
   - **修「Alt+Q 截图后浮窗出来极慢」**：根因不是慢，是**本地 OCR 崩溃后回落云端**。

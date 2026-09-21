@@ -1,0 +1,19 @@
+# WinOCR-Html - local OCR dependencies (OPTIONAL)
+#
+# What they are for: OCR runs locally on PP-OCRv6 -> offline, no API key,
+# about 1-2 seconds per screenshot. Without them the host falls back to
+# SiliconFlow cloud OCR, which needs `sfKey` and measured 100s+ per image
+# (and hallucinates more on plain screen text).
+#
+# Install (recommended - picks the right interpreter for you):
+#     native_host\install_deps.bat
+# or manually (make sure it is the SAME interpreter the host will use):
+#     <python.exe> -m pip install -r native_host\requirements-ocr.txt
+#
+# Why these are NOT vendored into the repo: they are binary wheels bound to
+# both the OS/arch and the Python ABI (a cp311 wheel cannot load in cp314).
+# Only pure data travels with the project - that is models/ocr/v6_tiny/.
+numpy>=1.24
+Pillow>=10.0
+onnxruntime>=1.16
+rapidocr>=3.0

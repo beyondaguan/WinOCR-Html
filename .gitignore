@@ -1,5 +1,12 @@
 # ---- 密钥与本地配置（绝不提交）----
 native_host/winocr_config.json
+.env
+.env.*
+*.local
+*.key
+*.pem
+*.pfx
+*.p12
 
 # ---- 运行数据：OCR 记录、日志、名册、截图（含患者隐私）----
 native_host/data/
@@ -13,7 +20,20 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.venv/
+venv/
 
-# ---- 临时诊断产物 ----
+# ---- Node / 前端 ----
+node_modules/
+
+# ---- IDE / 系统垃圾 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 临时诊断产物（脚本默认写 native_host/data/，此条为双保险）----
 *.tmp
-*_diag_*.png
+_diag_*
+_ocr_probe.txt

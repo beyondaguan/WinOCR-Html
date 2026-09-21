@@ -45,11 +45,18 @@ def roster_pids():
 
 
 def alive(pid):
-    h = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))
+    # OpenProcess 成功 ≠ 存活：进程刚退出时内核对象未清理完仍能打开。
+    # 必须再查退出码：STILL_ACTIVE(259) 才算活着（os._exit(0) 退出码为 0）。
+    h = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))  # QUERY_LIMITED_INFORMATION
     if not h:
         return False
-    ctypes.windll.kernel32.CloseHandle(h)
-    return True
+    try:
+        code = ctypes.c_ulong()
+        if not ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code)):
+            return False
+        return code.value == 259
+    finally:
+        ctypes.windll.kernel32.CloseHandle(h)
 
 
 def wait_dead(pid, timeout=6.0):

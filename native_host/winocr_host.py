@@ -37,7 +37,6 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import html
-import contextlib
 
 # --------------------- 解释器自举（必须早于 tkinter） ---------------------
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -85,12 +84,79 @@ DATA_DIR = os.path.join(HERE, 'data')
 ROSTER_PATH = os.path.join(DATA_DIR, 'hosts.roster.json')
 ROSTER_LOCK = os.path.join(DATA_DIR, 'hosts.lck')
 
+# --------------------- 常量定义 ---------------------
+# NM 协议
+NM_LENGTH_PREFIX = 4          # 4 字节小端长度前缀
+NM_MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10MB 最大消息大小
+
+# 热键
+HOTKEY_ID_CAPTURE = 1
+HOTKEY_ID_QUIT = 2
+WM_HOTKEY = 0x0312
+WM_RELOAD_HOTKEY = 0x8001
+WM_HK_ACQUIRE = 0x8002
+WM_HK_RELEASE = 0x8003
+MOD_NOREPEAT = 0x4000
+
+# 截图
+SF_TRANSLATE_TIMEOUT = 60
+SF_OCR_TIMEOUT = 240
+MM_CHUNK_SIZE = 450
+MM_MAX_RETRIES = 3
+
+# 名册
+ROSTER_LOCK_RETRIES = 200
+ROSTER_LOCK_RETRY_INTERVAL = 0.05
+ROSTER_WRITE_RETRIES = 10
+ROSTER_WRITE_RETRY_INTERVAL = 0.05
+
+# 热键注册
+HOTKEY_REGISTER_RETRIES = 15
+HOTKEY_REGISTER_RETRY_INTERVAL = 0.2
+
+# 截图
+SCREENSHOT_DELAY_MS = 200       # 遮罩残影等待
+SCREENSHOT_BITMAPINFOHEADER_SIZE = 40
+SCREENSHOT_PLANES = 1
+SCREENSHOT_BPP = 32
+SCREENSHOT_ZLIB_LEVEL = 6
+
+# 浮窗
+RESULT_WINDOW_AUTO_CLOSE_MS = 60000
+
+# 选举
+LEADER_WATCH_INTERVAL = 0.7
+
+# 解释器
+PYENV_WAIT_TIMEOUT = 3.0
+
+# 共享常量（与 JS 扩展共享，修改时需同步更新两侧）
+SHARED_CONSTANTS_PATH = os.path.join(HERE, 'shared_constants.json')
+
+def _load_shared_constants():
+    """加载共享常量文件（模型名映射、语言映射等）。"""
+    try:
+        with open(SHARED_CONSTANTS_PATH, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+_SHARED = _load_shared_constants()
+SF_MODEL_ALIASES = _SHARED.get('sfModelAliases', {})
+OCR_ALIASES = _SHARED.get('ocrAliases', {})
+MM_LANG_MAP = _SHARED.get('mmLangMap', {})
+MM_ENDPOINT = _SHARED.get('mmEndpoint', 'https://api.mymemory.translated.net/get')
+SF_DEFAULT_URL = _SHARED.get('sfDefaultUrl', 'https://api.siliconflow.cn/v1')
+
 # --------------------- Native Messaging ---------------------
 def nm_read():
-    raw = sys.stdin.buffer.read(4)
-    if len(raw) < 4:
+    raw = sys.stdin.buffer.read(NM_LENGTH_PREFIX)
+    if len(raw) < NM_LENGTH_PREFIX:
         return None
     n = struct.unpack('<I', raw)[0]
+    if n > NM_MAX_MESSAGE_SIZE:
+        host_log('NM 消息过大: %d 字节，拒绝读取' % n)
+        return None
     data = sys.stdin.buffer.read(n)
     return json.loads(data.decode('utf-8'))
 
@@ -119,14 +185,7 @@ FREE_OCR_MODELS = ("PaddlePaddle/PaddleOCR-VL-1.5", "deepseek-ai/DeepSeek-OCR")
 
 # 硅基流动的模型 id 必须与官方完全一致（含 `PaddlePaddle/` 等前缀）。
 # 漏写前缀会返回 20012 "Model does not exist" —— 这个映射让旧的/手写的简写自动痊愈。
-SF_MODEL_ALIASES = {
-    "paddleocr-vl-1.5": "PaddlePaddle/PaddleOCR-VL-1.5",
-    "paddleocr-vl": "PaddlePaddle/PaddleOCR-VL-1.5",
-    "paddleocr": "PaddlePaddle/PaddleOCR-VL-1.5",
-    "deepseek-ocr": "deepseek-ai/DeepSeek-OCR",
-    "qwen3-8b": "Qwen/Qwen3-8B",
-    "qwen-3-8b": "Qwen/Qwen3-8B",
-}
+# SF_MODEL_ALIASES 从 shared_constants.json 加载（与 JS 扩展共享）
 
 
 def normalize_sf_model(name, fallback):
@@ -182,19 +241,21 @@ def load_config():
                 json.dump(cfg, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
-    SETTINGS.update(cfg)
-    # 模型名归一化：把历史遗留的简写（如 `PaddleOCR-VL-1.5`）纠正为 SF 上真实的
-    # 全称（`PaddlePaddle/PaddleOCR-VL-1.5`），否则会一直报 20012 Model does not exist。
-    SETTINGS["sfModel"] = normalize_sf_model(SETTINGS.get("sfModel"), "Qwen/Qwen3-8B")
-    SETTINGS["sfOcrModel"] = normalize_sf_model(SETTINGS.get("sfOcrModel"),
+    with SETTINGS_LOCK:
+        SETTINGS.update(cfg)
+        # 模型名归一化：把历史遗留的简写（如 `PaddleOCR-VL-1.5`）纠正为 SF 上真实的
+        # 全称（`PaddlePaddle/PaddleOCR-VL-1.5`），否则会一直报 20012 Model does not exist。
+        SETTINGS["sfModel"] = normalize_sf_model(SETTINGS.get("sfModel"), "Qwen/Qwen3-8B")
+        SETTINGS["sfOcrModel"] = normalize_sf_model(SETTINGS.get("sfOcrModel"),
                                                default_config()["sfOcrModel"])
     # OCR 引擎 / 本地档位取值校验（手改配置写错时不要静默跑错分支）
-    if str(SETTINGS.get("ocrEngine") or "").lower() not in ("local", "sf"):
-        SETTINGS["ocrEngine"] = "local"
-    if str(SETTINGS.get("localOcrTier") or "").lower() not in ("tiny", "medium"):
-        SETTINGS["localOcrTier"] = "tiny"
-    if str(SETTINGS.get("translateEngine") or "").lower() not in ("sf", "mymemory", "none"):
-        SETTINGS["translateEngine"] = "sf"
+    with SETTINGS_LOCK:
+        if str(SETTINGS.get("ocrEngine") or "").lower() not in ("local", "sf"):
+            SETTINGS["ocrEngine"] = "local"
+        if str(SETTINGS.get("localOcrTier") or "").lower() not in ("tiny", "medium"):
+            SETTINGS["localOcrTier"] = "tiny"
+        if str(SETTINGS.get("translateEngine") or "").lower() not in ("sf", "mymemory", "none"):
+            SETTINGS["translateEngine"] = "sf"
 
 
 # --------------------- 设置（由扩展同步 / 本地配置） ---------------------
@@ -204,6 +265,8 @@ ACTIVE_QUIT_HOTKEY = ''  # 实际注册成功的「退出宿主」热键
 IS_LEADER = False       # 本实例是否持有全局热键（多实例名册选举结果，leader_watcher 维护）
 
 _WRITE_LOCK = threading.Lock()
+# SETTINGS 读写锁（可重入）：nm_read_thread 写、hotkey_thread/leader_watcher/do_capture 读
+SETTINGS_LOCK = threading.RLock()
 # leader_watcher 请求退出时置位，避免 watcher 在退出过程中反复改选
 STOP_EVENT = threading.Event()
 
@@ -372,12 +435,12 @@ def _with_roster_lock(fn):
     os.makedirs(DATA_DIR, exist_ok=True)
     f = open(ROSTER_LOCK, 'a+b')
     try:
-        for _ in range(200):                 # 最多等 10s
+        for _ in range(ROSTER_LOCK_RETRIES):
             try:
                 msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
                 break
             except OSError:
-                time.sleep(0.05)
+                time.sleep(ROSTER_LOCK_RETRY_INTERVAL)
         else:
             raise RuntimeError('名册锁等待超时')
         try:
@@ -409,13 +472,13 @@ def _write_roster(r):
     # 时 os.replace 会抛 WinError 5（拒绝访问）——短暂重试即可，不要一次失败就
     # 让整轮选举作废（实测多实例按键快速交接时撞到过）。
     last = None
-    for _ in range(10):
+    for _ in range(ROSTER_WRITE_RETRIES):
         try:
             os.replace(tmp, ROSTER_PATH)
             return
         except OSError as e:
             last = e
-            time.sleep(0.05)
+            time.sleep(ROSTER_WRITE_RETRY_INTERVAL)
     raise last
 
 
@@ -475,16 +538,17 @@ def announce_hello():
         return
     try:
         with _WRITE_LOCK:
-            nm_write({"type": "hello", "mode": "nm", "hotkey": ACTIVE_HOTKEY,
-                      "quitHotkey": ACTIVE_QUIT_HOTKEY,
-                      "pid": os.getpid(), "python": sys.executable,
-                      # 把「本地配置到底在哪」一并报给扩展：独立模式与扩展是两份配置，
-                      # 用户最需要知道的就是这个文件的绝对路径（否则只能去翻 README）。
-                      "hostDir": HERE, "configPath": CONFIG_PATH,
-                      "ocrEngine": SETTINGS.get("ocrEngine") or "local",
-                      "ocrDesc": ocr_engine_desc(),
-                      "translateEngine": SETTINGS.get("translateEngine") or "sf",
-                      "leader": IS_LEADER})
+            with SETTINGS_LOCK:
+                nm_write({"type": "hello", "mode": "nm", "hotkey": ACTIVE_HOTKEY,
+                          "quitHotkey": ACTIVE_QUIT_HOTKEY,
+                          "pid": os.getpid(), "python": sys.executable,
+                          # 把「本地配置到底在哪」一并报给扩展：独立模式与扩展是两份配置，
+                          # 用户最需要知道的就是这个文件的绝对路径（否则只能去翻 README）。
+                          "hostDir": HERE, "configPath": CONFIG_PATH,
+                          "ocrEngine": SETTINGS.get("ocrEngine") or "local",
+                          "ocrDesc": ocr_engine_desc(),
+                          "translateEngine": SETTINGS.get("translateEngine") or "sf",
+                          "leader": IS_LEADER})
     except Exception:
         pass
 
@@ -594,10 +658,11 @@ def post_hotkey_message(msg):
 def save_config():
     """把 SETTINGS 里属于配置的键写回 winocr_config.json（只写已知键，不污染文件）。"""
     try:
-        out = {}
-        for k in default_config().keys():
-            if k in SETTINGS:
-                out[k] = SETTINGS[k]
+        with SETTINGS_LOCK:
+            out = {}
+            for k in default_config().keys():
+                if k in SETTINGS:
+                    out[k] = SETTINGS[k]
         with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
             json.dump(out, f, ensure_ascii=False, indent=2)
         return True
@@ -626,11 +691,12 @@ _CREDENTIAL_KEYS = ('sfKey', 'lexiangToken', 'obsidianKey')
 def merge_settings(incoming):
     """把扩展推来的设置合进 SETTINGS，凭据类键的空值不覆盖已有的非空值。"""
     out = dict(incoming or {})
-    for k in _CREDENTIAL_KEYS:
-        v = out.get(k)
-        if isinstance(v, str) and not v.strip() and str(SETTINGS.get(k) or '').strip():
-            host_log('忽略扩展推来的空 %s：保留本地已保存的凭据（要清空请在选项页显式清除）' % k)
-            out.pop(k, None)
+    with SETTINGS_LOCK:
+        for k in _CREDENTIAL_KEYS:
+            v = out.get(k)
+            if isinstance(v, str) and not v.strip() and str(SETTINGS.get(k) or '').strip():
+                host_log('忽略扩展推来的空 %s：保留本地已保存的凭据（要清空请在选项页显式清除）' % k)
+                out.pop(k, None)
     return out
 
 
@@ -663,23 +729,6 @@ SF_TRANSLATE_TIMEOUT = 60
 SF_OCR_TIMEOUT = 240
 
 
-def sf_post(url_path, payload, key, timeout=SF_TRANSLATE_TIMEOUT):
-    url = SETTINGS["sfUrl"].rstrip("/") + url_path
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode('utf-8'),
-        headers={"Content-Type": "application/json", "Authorization": "Bearer " + key},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode('utf-8'))
-    except urllib.error.HTTPError as e:
-        return {"error": e.read().decode('utf-8', 'ignore')[:300]}
-    except Exception as e:
-        return {"error": str(e)}
-
-
 def sf_error_text(prefix, raw):
     """把 SF 的原始错误体整理成一句人话。
 
@@ -706,149 +755,24 @@ def sf_error_text(prefix, raw):
     return "%s%s" % (prefix, msg)
 
 
-def sf_translate(text):
-    # 空文本绝不发请求：模型收到空 user 消息时会把 system 提示词本身「翻译」一遍
-    # 回填（实测 Qwen3-8B 即如此），用户会在译文框看到一段莫名其妙的提示词中译。
-    if not str(text or "").strip():
-        return "翻译失败: 原文为空（OCR 未识别到文字），已跳过翻译"
-    sys_p = ("You are a professional translator. Translate the user text into %s. "
-             "Keep medical/technical terms accurate. Output ONLY the translation, no commentary."
-             % SETTINGS["tgtLang"])
-    payload = {
-        "model": normalize_sf_model(SETTINGS.get("sfModel"), "Qwen/Qwen3-8B"),
-        "messages": [{"role": "system", "content": sys_p}, {"role": "user", "content": text}],
-        "temperature": 0.3, "max_tokens": 4096,
-        # Qwen3 系列在硅基流动上 enable_thinking 默认 True，思考 token 会耗尽 max_tokens
-        # 导致 content 为空 → 翻译必须显式关闭
-        "enable_thinking": False,
-    }
-    j = sf_post("/chat/completions", payload, SETTINGS["sfKey"])
-    # 个别模型不接受 enable_thinking → 去掉该参数重试一次
-    if j.get("error") and "enable_thinking" in str(j["error"]):
-        payload.pop("enable_thinking", None)
-        j = sf_post("/chat/completions", payload, SETTINGS["sfKey"])
-    if j.get("error"):
-        return sf_error_text("翻译失败: ", j["error"])
-    out = (j.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
-    if not out:
-        return "翻译失败: 模型返回空内容（可能被思考模式占用）"
-    return out
-
-
-# --------------------- MyMemory（免费 · 免 key · 国内可直连） ---------------------
-# 与扩展 js/common.js 同一实现：GET 切块 450 字符；HTML 实体解码；额度用尽要明确报错。
-MM_ENDPOINT = "https://api.mymemory.translated.net/get"
-MM_LANG = {
-    "zh": "zh-CN", "en": "en-GB", "ja": "ja-JP", "ko": "ko-KR", "fr": "fr-FR",
-    "de": "de-DE", "es": "es-ES", "ru": "ru-RU", "it": "it-IT", "pt": "pt-PT",
-    "ar": "ar-SA", "th": "th-TH", "vi": "vi-VN",
-}
-
-
-def mm_lang(code):
-    c = str(code or "").lower()
-    if not c or c == "auto":
-        return "en-GB"   # MyMemory 不支持 auto 探测，按 en 处理
-    return MM_LANG.get(c, c)
-
-
-def mm_chunks(text, limit=450):
-    """按 limit 字符切块，优先换行/句末，保留换行分隔符（移植自扩展 common.js）。"""
-    out, buf = [], ""
-    for seg in _split_keep(text, "(\n+)"):
-        if len(buf + seg) <= limit:
-            buf += seg
-            continue
-        if buf:
-            out.append(buf)
-            buf = ""
-        if len(seg) <= limit:
-            buf = seg
-            continue
-        s = seg
-        while len(s) > limit:
-            cut = max(s.rfind(". ", 0, limit), s.rfind("。", 0, limit),
-                      s.rfind("！", 0, limit), s.rfind(" ", 0, limit))
-            if cut >= limit or cut < limit * 0.5:
-                cut = limit - 1
-            out.append(s[:cut + 1])
-            s = s[cut + 1:]
-        buf = s
-    if buf:
-        out.append(buf)
-    return [x for x in out if x.strip()]
-
-
-def _split_keep(text, pattern):
-    """re.split 带捕获组（保留分隔符）。函数内 import re 避免顶部再增一项常驻导入。"""
-    import re
-    return re.split(pattern, str(text or ""))
-
-
-def mm_once(text, src, tgt, email=""):
-    url = MM_ENDPOINT + "?q=" + urllib.parse.quote(text) + \
-        "&langpair=" + urllib.parse.quote(src + "|" + tgt)
-    if email:
-        url += "&de=" + urllib.parse.quote(email)
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "WinOCR-Host"})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            j = json.loads(r.read().decode("utf-8"))
-    except Exception as e:
-        raise RuntimeError("MyMemory 网络不可达：%s" % e)
-    det = str(j.get("responseDetails") or "")
-    if re_test_warning(det) or j.get("quotaFinished"):
-        raise RuntimeError("MyMemory 今日免费额度已用尽（匿名约 5000 字符/天）；"
-                           "在 winocr_config.json 或扩展选项里填 mymemoryEmail 可提到约 50000。")
-    if j.get("responseStatus") and int(j.get("responseStatus")) != 200:
-        raise RuntimeError("MyMemory 返回 %s：%s" % (j.get("responseStatus"), det))
-    out = html.unescape(str((j.get("responseData") or {}).get("translatedText") or "")).strip()
-    if re_test_warning(out):
-        raise RuntimeError("MyMemory 今日免费额度已用尽；填 mymemoryEmail 可提到约 50000 字符/天。")
-    return out
-
-
-def re_test_warning(s):
-    import re
-    return bool(re.search(r"MYMEMORY WARNING|ALL AVAILABLE FREE TRANSLATIONS", str(s or ""), re.I))
-
-
-def mm_translate(text):
-    src, tgt = mm_lang(SETTINGS.get("srcLang")), mm_lang(SETTINGS.get("tgtLang"))
-    if src == tgt:
-        return "翻译失败: 源语言与目标语言相同，无需翻译"
-    email = str(SETTINGS.get("mymemoryEmail") or "").strip()
-    parts = [mm_once(c, src, tgt, email) for c in mm_chunks(text, 450)]
-    out = "".join(parts).strip()
-    if not out:
-        return "翻译失败: MyMemory 返回空内容"
-    return out
-
-
-def translate_text(text):
-    """截图 OCR 文本的翻译总调度（引擎开关 = SETTINGS['translateEngine']）。"""
-    te = str(SETTINGS.get("translateEngine") or "sf").lower()
-    if te == "mymemory":
-        return mm_translate(text)
-    return sf_translate(text)
-
-
 def sf_ocr(data_url):
-    model = normalize_sf_model(SETTINGS.get("sfOcrModel"),
-                              default_config()["sfOcrModel"])
-    j = sf_post("/chat/completions", {
-        "model": model,
+    with SETTINGS_LOCK:
+        sf_ocr_model = normalize_sf_model(SETTINGS.get("sfOcrModel"),
+                                          default_config()["sfOcrModel"])
+        sf_key = SETTINGS["sfKey"]
+    j = translate.sf_post("/chat/completions", {
+        "model": sf_ocr_model,
         "messages": [{"role": "user", "content": [
             {"type": "text", "text": "OCR all text in this image. Output only the recognized text, preserving line breaks."},
             {"type": "image_url", "image_url": {"url": data_url}},
         ]}],
         "max_tokens": 2048,
-    }, SETTINGS["sfKey"], timeout=SF_OCR_TIMEOUT)
+    }, sf_key, timeout=SF_OCR_TIMEOUT)
     if j.get("error"):
         return sf_error_text("OCR失败: ", j["error"])
     out = (j.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
     if not out:
-        return "OCR失败: 模型返回空内容（图片里可能没有文字；模型=%s）" % model
+        return "OCR失败: 模型返回空内容（图片里可能没有文字；模型=%s）" % sf_ocr_model
     return out
 
 
@@ -862,7 +786,10 @@ def ocr_png(png_bytes):
       - 本地引擎正常跑但**没识别到文字**（空白/无文字图）→ 直接返回空串，
         不再去问云端：云端也认不出凭空出现的字，反而白白慢几十秒。
     """
-    if (SETTINGS.get("ocrEngine") or "local").lower() == "local":
+    with SETTINGS_LOCK:
+        ocr_engine = (SETTINGS.get("ocrEngine") or "local").lower()
+        local_tier = SETTINGS.get("localOcrTier") or ocr_local.DEFAULT_TIER
+    if ocr_engine == "local":
         global _LAST_LOCAL_ERR
         _LAST_LOCAL_ERR = ''
         try:
@@ -870,7 +797,7 @@ def ocr_png(png_bytes):
             ok, why = ocr_local.available()
             if not ok:
                 raise RuntimeError(why)
-            tier = SETTINGS.get("localOcrTier") or ocr_local.DEFAULT_TIER
+            tier = local_tier
             text, conf = ocr_local.recognize_png(png_bytes, tier)
             if text.strip():
                 host_log("本地 OCR：%s 档，置信度 %.3f，%d 字" % (tier, conf, len(text)))
@@ -885,99 +812,14 @@ def ocr_png(png_bytes):
     return sf_ocr(data_url)
 
 
-# --------------------- 截屏（ImageGrab 优先；BitBlt 零依赖兜底） ---------------------
-def screenshot_png_bytes(x=0, y=0, w=None, h=None):
-    """截指定区域，返回 PNG 字节。
+# --------------------- 截屏 ---------------------
+# 截屏实现已拆到 screenshot.py（ImageGrab 优先、BitBlt 兜底）
+from screenshot import screenshot_png_bytes
 
-    抓屏路径顺序（2026-09-21 在本机实测得出的结论）：
-      1) 首选 PIL.ImageGrab：Pillow ≥10 在 Windows 上走 DXGI Desktop Duplication
-         （C 扩展 grabscreen_win32），能抓到 DWM/硬件加速桌面；
-      2) 兜底老式 GDI BitBlt：零第三方依赖，但在本机的 DWM/驱动组合下**只能截到
-         纯黑画面**（GetDC(0) / GetWindowDC(GetDesktopWindow()) / 加 CAPTUREBLT
-         三种写法都验证过，黑色占比 100%）——所以它仅作为 ImageGrab 缺失时的
-         最后尝试，截出黑图时上层 OCR 会明确报「未识别到文字」。
-    """
-    import ctypes
-    user32 = ctypes.windll.user32
-
-    SW = user32.GetSystemMetrics(0)
-    SH = user32.GetSystemMetrics(1)
-    if w is None:
-        w = SW
-    if h is None:
-        h = SH
-    # 边界保护：单显示器下坐标为 [0,SW]×[0,SH]
-    x = max(0, min(int(x), SW - 1))
-    y = max(0, min(int(y), SH - 1))
-    w = max(1, min(int(w), SW - x))
-    h = max(1, min(int(h), SH - y))
-
-    # 1) ImageGrab（DXGI Desktop Duplication）
-    try:
-        from PIL import ImageGrab
-        im = ImageGrab.grab(bbox=(x, y, x + w, y + h))
-        buf = io.BytesIO()
-        im.save(buf, format='PNG')
-        data = buf.getvalue()
-        if data:
-            return data
-        host_log('ImageGrab 返回空截图，回退 BitBlt')
-    except Exception as e:
-        host_log('ImageGrab 抓屏失败（%s: %s），回退 BitBlt' % (type(e).__name__, e))
-
-    # 2) BitBlt 兜底
-    return _screenshot_bitblt(x, y, w, h)
-
-
-def _screenshot_bitblt(x, y, w, h):
-    import ctypes
-    user32 = ctypes.windll.user32
-    gdi32 = ctypes.windll.gdi32
-    SRCCOPY = 0x00CC0020
-    BI_RGB = 0
-
-    hwnd = user32.GetDesktopWindow()
-    hdc = user32.GetWindowDC(hwnd)
-    hmem = gdi32.CreateCompatibleDC(hdc)
-    hbmp = gdi32.CreateCompatibleBitmap(hdc, w, h)
-    gdi32.SelectObject(hmem, hbmp)
-    gdi32.BitBlt(hmem, 0, 0, w, h, hdc, x, y, SRCCOPY)
-
-    bmi = ctypes.create_string_buffer(40)
-    ctypes.memset(bmi, 0, 40)
-    ctypes.cast(bmi, ctypes.POINTER(ctypes.c_int))[0] = 40
-    ctypes.cast(bmi, ctypes.POINTER(ctypes.c_int))[1] = w
-    ctypes.cast(bmi, ctypes.POINTER(ctypes.c_int))[2] = -h  # 负值=top-down，省去翻转
-    ctypes.cast(bmi, ctypes.POINTER(ctypes.c_short))[3] = 1   # planes
-    ctypes.cast(bmi, ctypes.POINTER(ctypes.c_short))[4] = 32  # bpp
-    buf = ctypes.create_string_buffer(w * h * 4)
-    gdi32.GetDIBits(hmem, hbmp, 0, h, buf, bmi, BI_RGB)
-
-    data = bytes(buf)  # BGRx, top-down（因 bmi 高度为负）
-    stride = w * 4
-    raw = bytearray()
-    for yy in range(h):
-        raw.append(0)  # PNG filter: none
-        row = data[yy * stride:(yy + 1) * stride]
-        for xx in range(w):
-            i = xx * 4
-            raw += bytes((row[i + 2], row[i + 1], row[i], 255))
-
-    comp = zlib.compress(bytes(raw), 6)
-
-    def chunk(typ, dt):
-        c = typ + dt
-        return struct.pack('>I', len(dt)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
-
-    png = b'\x89PNG\r\n\x1a\n'
-    png += chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0))
-    png += chunk(b'IDAT', comp)
-    png += chunk(b'IEND', b'')
-
-    gdi32.DeleteObject(hbmp)
-    gdi32.DeleteDC(hmem)
-    user32.ReleaseDC(hwnd, hdc)
-    return png
+# --------------------- 翻译 ---------------------
+# 翻译实现已拆到 translate.py（SF / MyMemory）
+import translate
+translate.set_settings(SETTINGS, SETTINGS_LOCK)
 
 
 # --------------------- 区域画框（全屏遮罩 + 拖拽选区） ---------------------
@@ -1084,7 +926,7 @@ def show_result(root, original, translation):
     for w in (win, o, t):
         w.bind('<Escape>', lambda e: win.destroy())
 
-    win.after(60000, lambda: win.destroy() if win.winfo_exists() else None)  # 60s 自动关闭
+    win.after(RESULT_WINDOW_AUTO_CLOSE_MS, lambda: win.destroy() if win.winfo_exists() else None)
 
 
 # --------------------- 本地记录（独立模式） ---------------------
@@ -1123,12 +965,13 @@ def do_capture(root):
     if not region:
         return  # 用户按 Esc 取消
     # 遮罩刚 destroy()，DXGI Desktop Duplication（ImageGrab）取的是 DWM 合成帧，
-    # 立即抓可能把半透明遮罩残影拍进去；等 200ms 让它合成掉（人眼几乎无感）。
-    time.sleep(0.2)
+    # 立即抓可能把半透明遮罩残影拍进去；等 SCREENSHOT_DELAY_MS 让它合成掉（人眼几乎无感）。
+    time.sleep(SCREENSHOT_DELAY_MS / 1000.0)
     # 2) 截选定区域
     try:
         png = screenshot_png_bytes(*region)
     except Exception as e:
+        host_log('截图失败: %s: %s' % (type(e).__name__, e))
         show_result(root, "截图失败: " + str(e), "")
         return
     if not png:
@@ -1139,6 +982,7 @@ def do_capture(root):
     try:
         ocr = ocr_png(png)
     except Exception as e:
+        host_log('OCR失败: %s: %s' % (type(e).__name__, e))
         ocr = "OCR失败: " + str(e)
     failed = ocr.startswith("OCR失败")
 
@@ -1151,27 +995,33 @@ def do_capture(root):
     empty_ocr = (not failed) and not ocr.strip()
     if empty_ocr:
         ocr = "（未识别到文字）"
+        with SETTINGS_LOCK:
+            hotkey_hint = ACTIVE_HOTKEY or SETTINGS.get('hotkey') or '热键'
         tr = ("框选区域里没有检出文字。请重新按 %s 框选：尽量贴紧文字、不要带大片空白，"
-              "细小文字可把区域框大一些再试。" % (ACTIVE_HOTKEY or SETTINGS.get('hotkey') or '热键').upper())
+              "细小文字可把区域框大一些再试。" % hotkey_hint.upper())
         if _LAST_LOCAL_ERR:
             tr += "\n详情：%s" % _LAST_LOCAL_ERR
-        if (SETTINGS.get("ocrEngine") or "local").lower() == "local":
+        with SETTINGS_LOCK:
+            ocr_engine_hint = (SETTINGS.get("ocrEngine") or "local").lower()
+            te_hint = str(SETTINGS.get("translateEngine") or "sf").lower()
+            sf_key_hint = SETTINGS.get("sfKey")
+        if ocr_engine_hint == "local":
             tr += ('\n当前是本地离线 OCR，识别不出时不会自动问云端；若确认区内有清晰文字仍识别不出，'
                    '可在扩展选项（或 %s）里把 ocrEngine 改成 "sf"，用云端视觉模型再试。'
                    % os.path.basename(CONFIG_PATH))
     elif not failed:
-        te = str(SETTINGS.get("translateEngine") or "sf").lower()
+        te = te_hint
         if te == "none":
             tr = "（当前为「仅 OCR」模式，未翻译；可在扩展选项或 %s 里把 translateEngine 改成 sf / mymemory）" \
                 % os.path.basename(CONFIG_PATH)
-        elif te == "sf" and not SETTINGS.get("sfKey"):
+        elif te == "sf" and not sf_key_hint:
             tr = "（未配置 SiliconFlow key，仅显示 OCR 结果；也可把 translateEngine 改成 mymemory 免 key 翻译）"
         else:
             try:
-                tr = translate_text(ocr)
+                tr = translate.translate_text(ocr)
             except Exception as e:
                 tr = "翻译失败: " + str(e)
-    elif failed and not SETTINGS.get("sfKey"):
+    elif failed and not sf_key_hint:
         # 两条路都断了：把「为什么」讲清楚，别让用户对着一句 Token is invalid 猜。
         ocr += "\n\n— 本地 OCR 也不可用 —"
         if _LAST_LOCAL_ERR:
@@ -1236,7 +1086,7 @@ def hotkey_thread(root):
         for i in range(tries):
             if user32.RegisterHotKey(None, hid, mods | MOD_NOREPEAT, vk):
                 return spec
-            time.sleep(0.2)
+            time.sleep(HOTKEY_REGISTER_RETRY_INTERVAL)
         return None
 
     def acquire():
@@ -1244,8 +1094,9 @@ def hotkey_thread(root):
         if acquired:
             return
         global ACTIVE_HOTKEY, ACTIVE_QUIT_HOTKEY
-        want_cap = SETTINGS.get('hotkey') or 'ctrl+shift+m'
-        want_quit = SETTINGS.get('quitHotkey') or 'ctrl+alt+q'
+        with SETTINGS_LOCK:
+            want_cap = SETTINGS.get('hotkey') or 'ctrl+shift+m'
+            want_quit = SETTINGS.get('quitHotkey') or 'ctrl+alt+q'
         # 1) 目标键优先并重试等旧 owner 释放；2) 确实拿不到才退备选
         spec = _register_with_retry(want_cap, HOTKEY_ID_CAPTURE)
         if not spec:
@@ -1312,7 +1163,7 @@ def leader_watcher(root):
     """每 0.7s 做一次名册选举：最旧存活实例持有热键，leader 死后顺位接管。"""
     global IS_LEADER
     standby_told = False
-    while not STOP_EVENT.wait(0.7):
+    while not STOP_EVENT.wait(LEADER_WATCH_INTERVAL):
         try:
             leader, n_alive = roster_touch()
         except Exception as e:
@@ -1323,10 +1174,11 @@ def leader_watcher(root):
             IS_LEADER = True
             standby_told = False
             post_hotkey_message(WM_HK_ACQUIRE)
+            with SETTINGS_LOCK:
+                hotkey_str = str(SETTINGS.get('hotkey') or 'alt+q').upper()
+                quit_hotkey_str = str(SETTINGS.get('quitHotkey') or 'ctrl+alt+q').upper()
             notify('已就绪（pid %d，共 %d 个实例）：按 %s 截图；%s 关闭当前实例（再按关闭下一个）'
-                   % (me, n_alive,
-                      str(SETTINGS.get('hotkey') or 'alt+q').upper(),
-                      str(SETTINGS.get('quitHotkey') or 'ctrl+alt+q').upper()))
+                   % (me, n_alive, hotkey_str, quit_hotkey_str))
         elif leader != me and IS_LEADER:
             IS_LEADER = False
             post_hotkey_message(WM_HK_RELEASE)
@@ -1420,9 +1272,10 @@ def nm_read_thread(root):
             s = merge_settings(msg.get("settings") or {})
             old_hotkey = SETTINGS.get('hotkey')
             old_quit = SETTINGS.get('quitHotkey')
-            SETTINGS.update(s)
-            if str(SETTINGS.get("translateEngine") or "").lower() not in ("sf", "mymemory", "none"):
-                SETTINGS["translateEngine"] = "sf"
+            with SETTINGS_LOCK:
+                SETTINGS.update(s)
+                if str(SETTINGS.get("translateEngine") or "").lower() not in ("sf", "mymemory", "none"):
+                    SETTINGS["translateEngine"] = "sf"
             # 扩展推来的是全量快照（含翻译引擎/key/热键）：落盘，让下次独立模式
             # （run_host.bat，不经过浏览器）也能用到同一份配置；否则选项页里切了
             # MyMemory 只对当次 NM 会话生效，重启独立宿主后又回到 sf。
@@ -1481,6 +1334,7 @@ def nm_read_thread(root):
                         else:
                             nm_write({"type": "ocr.result", "id": mid, "text": text})
                 except Exception as e:
+                    host_log('NM OCR失败: %s: %s' % (type(e).__name__, e))
                     with _WRITE_LOCK:
                         nm_write({"type": "ocr.result", "id": mid, "error": "OCR失败: %s" % e})
 
@@ -1613,7 +1467,9 @@ def run_doctor():
         say('        roster      : %d alive instance(s) (leader holds ALT+Q / CTRL+ALT+Q;'
             % n)
         say('                      CTRL+ALT+Q closes them one by one; stop_host.bat kills all)')
-        say('        translateEngine=%s (sf/mymemory/none)' % SETTINGS.get('translateEngine'))
+        with SETTINGS_LOCK:
+            te = SETTINGS.get('translateEngine')
+        say('        translateEngine=%s (sf/mymemory/none)' % te)
     except Exception as e:
         say('        failed: %s' % e)
 
@@ -1677,13 +1533,16 @@ def main():
     def _warm():
         try:
             import ocr_local
-            if (SETTINGS.get('ocrEngine') or 'local').lower() == 'local':
+            with SETTINGS_LOCK:
+                ocr_engine_warm = (SETTINGS.get('ocrEngine') or 'local').lower()
+                local_tier_warm = SETTINGS.get('localOcrTier') or 'tiny'
+            if ocr_engine_warm == 'local':
                 ok, why = ocr_local.available()
                 if not ok:
                     notify('本地 OCR 不可用：%s（会在截图时自动回落云端）' % why)
                     return
                 t0 = time.time()
-                if ocr_local.warmup(SETTINGS.get('localOcrTier') or 'tiny'):
+                if ocr_local.warmup(local_tier_warm):
                     host_log('本地 OCR 预热完成 %.1fs' % (time.time() - t0))
         except Exception as e:
             host_log('本地 OCR 预热跳过：%s' % e)
@@ -1693,7 +1552,7 @@ def main():
     t_hot = threading.Thread(target=hotkey_thread, args=(root,), daemon=True)
     t_hot.start()
     # 等热键线程拿到自己的线程 id 再开选举，避免第一条 ACQUIRE 消息丢失
-    HK_READY.wait(3.0)
+    HK_READY.wait(PYENV_WAIT_TIMEOUT)
 
     threading.Thread(target=leader_watcher, args=(root,), daemon=True).start()
 
@@ -1712,7 +1571,9 @@ def main():
             roster_touch(leave=True)
         except Exception:
             pass
-    return 0
+    # 跳过解释器 shutdown：多实例并存时 onnxruntime/tkinter 的析构可达 6-8s，
+    # 期间进程挂着白占内存。此时名册已摘除、热键已注销、日志已落盘，强退无副作用。
+    os._exit(0)
 
 
 if __name__ == "__main__":

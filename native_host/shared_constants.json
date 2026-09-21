@@ -1,0 +1,38 @@
+{
+  "_comment": "Python 宿主与 JS 扩展共享的常量（模型名映射、语言映射等）。修改时需同步更新两侧代码。",
+  "sfModelAliases": {
+    "qwen3-8b": "Qwen/Qwen3-8B",
+    "deepseek-r1": "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+    "paddleocr-vl-1.5": "PaddlePaddle/PaddleOCR-VL-1.5",
+    "deepseek-ocr": "deepseek-ai/DeepSeek-OCR"
+  },
+  "ocrAliases": {
+    "paddleocr-vl-1.5": "PaddlePaddle/PaddleOCR-VL-1.5",
+    "deepseek-ocr": "deepseek-ai/DeepSeek-OCR"
+  },
+  "mmLangMap": {
+    "zh": "zh-CN",
+    "en": "en-GB",
+    "ja": "ja-JP",
+    "ko": "ko-KR",
+    "fr": "fr-FR",
+    "de": "de-DE",
+    "es": "es-ES",
+    "ru": "ru-RU",
+    "it": "it-IT",
+    "pt": "pt-PT",
+    "ar": "ar-SA",
+    "th": "th-TH",
+    "vi": "vi-VN"
+  },
+  "mmEndpoint": "https://api.mymemory.translated.net/get",
+  "sfDefaultUrl": "https://api.siliconflow.cn/v1",
+  "freeTextModels": [
+    {"id": "Qwen/Qwen3-8B", "note": "免费·质量最好"},
+    {"id": "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B", "note": "免费·推理模型"}
+  ],
+  "freeOcrModels": [
+    {"id": "PaddlePaddle/PaddleOCR-VL-1.5", "note": "免费·速度快"},
+    {"id": "deepseek-ai/DeepSeek-OCR", "note": "输出不稳定（会退化成乱码）"}
+  ]
+}

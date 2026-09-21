@@ -3,6 +3,13 @@
   const $ = (s) => document.querySelector(s);
   const s = await WINOCR.getSettings();
 
+  // ---------------- 常量定义 ----------------
+  const TEST_TIMEOUT_MS = 45000;
+  const OCR_TEST_TIMEOUT_MS = 90000;
+  const CANVAS_WIDTH = 760;
+  const CANVAS_HEIGHT = 130;
+  const CANVAS_FONT_SIZE = 27;
+
   // ---- 模型下拉：只用免费模型（杜绝手打错名 → 20012 Model does not exist 那类问题） ----
   function fillSelect(el, models, current) {
     el.innerHTML = '';
@@ -248,7 +255,7 @@
 
     let toId = null;
     const timeout = new Promise((_, rej) => {
-      toId = setTimeout(() => rej(new Error('TIMEOUT')), 45000);
+      toId = setTimeout(() => rej(new Error('TIMEOUT')), TEST_TIMEOUT_MS);
     });
     const cleanup = () => { done = true; clearInterval(ticker); if (toId) clearTimeout(toId); btn.disabled = false; };
 
@@ -307,12 +314,12 @@
     ok('OCR 测试中…');
     // 画一张「已知答案」的图，便于肉眼核对
     const cv = document.createElement('canvas');
-    cv.width = 760; cv.height = 130;
+    cv.width = CANVAS_WIDTH; cv.height = CANVAS_HEIGHT;
     const ctx = cv.getContext('2d');
     ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
-    ctx.fillStyle = '#000'; ctx.font = '27px "Segoe UI", sans-serif';
+    ctx.fillStyle = '#000'; ctx.font = CANVAS_FONT_SIZE + 'px "Segoe UI", sans-serif';
     ctx.fillText('Urinalysis: WBC 12 /HPF, nitrite positive.', 20, 46);
-    ctx.font = '27px "Microsoft YaHei", sans-serif';
+    ctx.font = CANVAS_FONT_SIZE + 'px "Microsoft YaHei", sans-serif';
     ctx.fillText('患者因急性尿潴留入院。', 20, 96);
     const want = 'Urinalysis: WBC 12 /HPF, nitrite positive. / 患者因急性尿潴留入院。';
     const dataUrl = cv.toDataURL('image/png');
@@ -320,7 +327,7 @@
     try {
       let text = '';
       if ($('#ocrEngine').value === 'local') {
-        text = await ocrViaHost(dataUrl, 90000);
+        text = await ocrViaHost(dataUrl, OCR_TEST_TIMEOUT_MS);
       } else {
         text = await WINOCR.ocrSF(dataUrl, {
           sfKey: $('#sfKey').value, sfUrl: $('#sfUrl').value, sfOcrModel: $('#sfOcrModel').value

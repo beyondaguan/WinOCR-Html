@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r native_host/requirements-ocr.txt
+
+      - name: Compile check
+        run: |
+          python -m py_compile native_host/winocr_host.py
+          python -m py_compile native_host/screenshot.py
+          python -m py_compile native_host/translate.py
+
+      - name: JS syntax check
+        run: |
+          node --check extension/js/common.js
+          node --check extension/js/content.js
+          node --check extension/background.js
+          node --check extension/options.js
+          node --check extension/sidepanel.js
+
+      - name: Run NM disconnect test
+        run: |
+          python tests/_test_nm_disconnect.py
+
+      - name: Run multi-instance test
+        run: |
+          python tests/_test_multi_instance.py

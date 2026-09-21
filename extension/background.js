@@ -13,6 +13,13 @@ let port = null;
 let nativeEnabled = false;
 let nativeTried = 0;
 let nativeLastError = '';
+
+// ---------------- 常量定义 ----------------
+const NATIVE_MAX_RETRIES = 3;
+const NATIVE_RETRY_INTERVAL_MS = 5000;
+const NATIVE_TIMEOUT_MS = 8000;
+const PANEL_OPEN_DELAY_MS = 500;
+const SETTINGS_SYNC_DELAY_MS = 500;
 let nativeGen = 0;          // 代次：忽略"被主动替换/断开"的陈旧 disconnect
 let hostInfo = null;        // 原生宿主自报的状态（收到 hello 后填充：模式 / 生效热键 / pid）
 
@@ -38,7 +45,7 @@ function hostSettings(timeoutMs) {
     const timer = setTimeout(() => {
       settingsWaiters.delete(id);
       reject(new Error('宿主读取配置超时'));
-    }, timeoutMs || 8000);
+    }, timeoutMs || NATIVE_TIMEOUT_MS);
     settingsWaiters.set(id, { resolve: resolve, reject: reject, timer: timer });
     try {
       port.postMessage({ type: 'settings.get', id: id });
@@ -126,7 +133,7 @@ function connectNative(force) {
     failOcrWaiters('原生宿主已断开：' + (err || '连接关闭'));
     failSettingsWaiters('原生宿主已断开：' + (err || '连接关闭'));
     nativeTried++;
-    if (nativeEnabled && err && nativeTried <= 3) setTimeout(() => connectNative(true), 5000);
+    if (nativeEnabled && err && nativeTried <= NATIVE_MAX_RETRIES) setTimeout(() => connectNative(true), NATIVE_RETRY_INTERVAL_MS);
   });
   WINOCR.getSettings().then((s) => {
     if (port && gen === nativeGen) { try { port.postMessage({ type: 'settings', settings: s }); } catch (e) {} }
@@ -345,9 +352,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'syncSettings') {
     syncNativeSetting();                                   // 开关变化即时生效
-    const push = () => { if (port) { try { port.postMessage({ type: 'settings', settings: msg.settings }); } catch (e) {} } };
+    const push = () => { if (port) { try { port.postMessage({ type: 'settings', settings: msg.settings }); } catch (e) { console.warn('[WinOCR] 设置同步到宿主失败:', e); } } };
     push();
-    setTimeout(push, 500);   // 若刚触发连接，端口就绪后再补发一次（保证热键等设置真送达）
+    setTimeout(push, SETTINGS_SYNC_DELAY_MS);   // 若刚触发连接，端口就绪后再补发一次（保证热键等设置真送达）
   }
   if (msg.type === 'capture' && port) { try { port.postMessage({ type: 'capture' }); } catch (e) {} }
   if (msg.type === 'ocr.viaHost') {
@@ -382,7 +389,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     nativeLastError = '';
     if (!nativeEnabled) { disconnectNative(); sendResponse(nativeStatus()); return; }
     connectNative(true);
-    setTimeout(() => sendResponse(nativeStatus()), 600);   // 稍等以捕获连接结果
+    setTimeout(() => sendResponse(nativeStatus()), PANEL_OPEN_DELAY_MS);   // 稍等以捕获连接结果
     return true;
   }
 });

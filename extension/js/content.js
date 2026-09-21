@@ -11,6 +11,13 @@
   const INLINE_CLASS = 'winocr-inline';
   let curSel = null;                 // 最近一次选中：{ range, text }
 
+  // ---------------- 常量定义 ----------------
+  const BUBBLE_MAX_WIDTH = 350;
+  const BUBBLE_MIN_HEIGHT = 110;
+  const BUBBLE_AUTO_CLOSE_MS = 1600;
+  const BUBBLE_RESTORE_MS = 1200;
+  const Z_INDEX_MAX = 2147483647;
+
   // 扩展上下文是否仍有效（扩展被重载/更新后，旧页面里的本脚本会失效）
   function ctxAlive() {
     try { return !!(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id); }
@@ -136,10 +143,10 @@
     }
     document.body.appendChild(b);
     bubble = b;
-    const x = Math.max(4, Math.min(rect.left, window.innerWidth - 350));
+    const x = Math.max(4, Math.min(rect.left, window.innerWidth - BUBBLE_MAX_WIDTH));
     let y = rect.bottom + window.scrollY + 6;
     // 别让常驻栏掉出屏幕底部（划到页面最后几行时很常见，译文区会被挤出视口）
-    const maxY = window.scrollY + window.innerHeight - 110;
+    const maxY = window.scrollY + window.innerHeight - BUBBLE_MIN_HEIGHT;
     if (y > maxY) y = Math.max(window.scrollY + 6, maxY);
     b.style.left = x + 'px';
     b.style.top = y + 'px';
@@ -184,7 +191,7 @@
           const span = applyInline(curSel && curSel.range, t, text);
           out.textContent = span ? '已原地替换 · 点译文可切回原文' : ('已翻译（未取到选区，仅显示）：' + t);
           try { await WINOCR.addRecord({ type: 'text', source: location.href, original: text, translation: t }); } catch (e) {}
-          setTimeout(() => { if (bubble === b) removeBubble(); }, 1600);   // 就地替换后收起，避免遮挡
+          setTimeout(() => { if (bubble === b) removeBubble(); }, BUBBLE_AUTO_CLOSE_MS);
         } else {
           out.textContent = t;
         }
@@ -247,7 +254,7 @@
     if (!o) return;
     const old = o.textContent;
     o.textContent = msg;
-    setTimeout(() => { if (o.textContent === msg) o.textContent = old; }, 1200);
+    setTimeout(() => { if (o.textContent === msg) o.textContent = old; }, BUBBLE_RESTORE_MS);
   }
 
   function onSelect(e) {
@@ -265,7 +272,7 @@
       try {
         range = sel.getRangeAt(0).cloneRange();
         rect = sel.getRangeAt(0).getBoundingClientRect();
-      } catch (e) {}
+      } catch (e) { console.warn('[WinOCR] 选区获取失败:', e); }
       curSel = { range: range, text: text };      // 存起来：点「译」时选区可能已被清空
       showBubble(text, rect);
     }, DEBOUNCE);
@@ -303,7 +310,7 @@
     const st = document.createElement('style');
     st.id = 'winocr-style';
     st.textContent =
-      '.winocr-bubble{position:absolute;z-index:2147483647;background:#fff;border:0.5px solid #d9d9d9;border-radius:10px;' +
+      '.winocr-bubble{position:absolute;z-index:' + Z_INDEX_MAX + ';background:#fff;border:0.5px solid #d9d9d9;border-radius:10px;' +
       'box-shadow:0 4px 16px rgba(0,0,0,.16);font:13px/1.55 system-ui,sans-serif;width:330px;padding:0;color:#222;overflow:hidden}' +
       '.winocr-head{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:5px 8px;' +
       'background:#f7f9fc;border-bottom:0.5px solid #eef1f5;user-select:none}' +

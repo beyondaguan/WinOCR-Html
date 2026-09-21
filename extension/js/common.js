@@ -10,6 +10,32 @@
   const K_HIST = 'winocr_history_v1';
   const K_SET = 'winocr_settings_v1';
 
+  // ---------------- 常量定义 ----------------
+  const SF_URL = 'https://api.siliconflow.cn/v1';  // 向后兼容旧引用（SF_DEFAULT_URL 在下方翻译区定义）
+  const MM_CHUNK_SIZE = 450;
+  const MM_LANG_MAP = {
+    zh: 'zh-CN', en: 'en-GB', ja: 'ja-JP', ko: 'ko-KR', fr: 'fr-FR',
+    de: 'de-DE', es: 'es-ES', ru: 'ru-RU', it: 'it-IT', pt: 'pt-PT',
+    ar: 'ar-SA', th: 'th-TH', vi: 'vi-VN'
+  };
+  const SF_TEMPERATURE = 0.3;
+  const SF_MAX_TOKENS = 4096;
+  const SF_OCR_MAX_TOKENS = 2048;
+  const BROWSER_MIN_VERSION = 138;
+  const HASH_SEED = 5381;
+  const CRC32_POLY = 0xEDB88320;
+  const ZIP_LOCAL_HEADER = 0x04034b50;
+  const ZIP_CENTRAL_HEADER = 0x02014b50;
+  const ZIP_END_HEADER = 0x06054b50;
+  const TRANSLATE_TIMEOUT_MS = 60000;
+  const OCR_TIMEOUT_MS = 240000;
+  const BUBBLE_DEBOUNCE_MS = 220;
+  const BUBBLE_MAX_WIDTH = 350;
+  const BUBBLE_MIN_HEIGHT = 110;
+  const BUBBLE_AUTO_CLOSE_MS = 1600;
+  const BUBBLE_RESTORE_MS = 1200;
+  const Z_INDEX_MAX = 2147483647;
+
   // ---------------- 免费模型清单（2026-09-20 实测） ----------------
   // 与原生宿主 winocr_host.py 里的 FREE_TEXT_MODELS / FREE_OCR_MODELS 保持一致。
   // 实测数据（同一张截图）：本地 PP-OCRv6 1.2–2.2s/置信度0.98；
@@ -363,7 +389,7 @@
           const tr = await global.Translator.create({ sourceLanguage: src, targetLanguage: tgt });
           return await tr.translate(text);
         }
-      } catch (e) { /* 回落 SF */ }
+      } catch (e) { console.warn('[WinOCR] 浏览器内置翻译不可用，回落 SF:', e); }
     }
     return await W.translateSF(text, opts);
   };

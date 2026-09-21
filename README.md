@@ -23,7 +23,10 @@ WinOCR-Html0.3/
 │   ├── background.js                   # 侧栏行为 + 快捷键 + 右键菜单 + NM 桥 + 本地 OCR 往返
 │   └── js/common.js                    # 共享：存储/翻译/OCR/MD/导出
 └── native_host/           # 原生宿主（外部截图 / 独立运行）
-    ├── winocr_host.py                  # 热键 + 区域画框 + 截屏 + 浮窗 + NM + OCR 调度
+    ├── winocr_host.py                  # 热键 + 区域画框 + 浮窗 + NM + OCR 调度 + 多实例选举
+    ├── screenshot.py                   # 抓屏：ImageGrab（DXGI）优先，GDI BitBlt 兜底
+    ├── translate.py                    # 翻译：SiliconFlow + MyMemory（sf/mymemory/none）
+    ├── shared_constants.json           # 宿主与扩展共享的模型别名 / 端点常量
     ├── pyenv.py                        # 解释器选址：挑一个真正装了本地 OCR 依赖的 Python
     ├── ocr_local.py                    # 本地 OCR：RapidOCR + PP-OCRv6（离线零 key）
     ├── models/ocr/v6_tiny/             # PP-OCRv6 det/rec + cls ONNX（共 6.6MB，随项目内置）

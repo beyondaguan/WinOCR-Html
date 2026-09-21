@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WinOCR-Html",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "minimum_chrome_version": "116",
   "description": "常驻侧栏翻译 + 截图 OCR + 日积累 MD 导出（翻译走 SiliconFlow；外部截图走原生宿主）",
   "permissions": [

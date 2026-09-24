@@ -4,6 +4,6 @@
   "path": "native_host/winocr_host.exe",
   "type": "stdio",
   "allowed_origins": [
-    "chrome-extension://EXTENSION_ID_HERE/"
+    "chrome-extension://*/"
   ]
 }

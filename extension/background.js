@@ -240,7 +240,10 @@ async function translateAndPush(text, sourceUrl, tabId) {
   pushPanel({ type: 'panel-input', text: t });
   try {
     const out = await WINOCR.translate(t, {
-      engine: s.engine, sfKey: s.sfKey, sfUrl: s.sfUrl, sfModel: s.sfModel, srcLang: s.srcLang, tgtLang: s.tgtLang
+      engine: s.engine, sfKey: s.sfKey, sfUrl: s.sfUrl, sfModel: s.sfModel,
+      mymemoryEmail: s.mymemoryEmail,
+      ollamaUrl: s.ollamaUrl, ollamaModel: s.ollamaModel,
+      srcLang: s.srcLang, tgtLang: s.tgtLang
     });
     await WINOCR.addRecord({ type: 'text', source: sourceUrl || '', original: t, translation: out });
     pushPanel({ type: 'panel-result', original: t, translation: out });
@@ -357,6 +360,47 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     setTimeout(push, SETTINGS_SYNC_DELAY_MS);   // 若刚触发连接，端口就绪后再补发一次（保证热键等设置真送达）
   }
   if (msg.type === 'capture' && port) { try { port.postMessage({ type: 'capture' }); } catch (e) {} }
+  // 浏览器内截图：捕获当前标签页可见区域（无需原生宿主）
+  if (msg.type === 'capture.visibleTab') {
+    (async () => {
+      try {
+        const tabId = msg.tabId || (sender.tab && sender.tab.id);
+        if (!tabId) { sendResponse({ error: '无 tabId' }); return; }
+        const dataUrl = await new Promise((res, rej) => {
+          chrome.tabs.captureVisibleTab(
+            chrome.windows ? chrome.windows.WINDOW_ID_CURRENT : undefined,
+            { format: 'png' },
+            (d) => { const e = chrome.runtime.lastError; if (e) rej(new Error(e.message)); else res(d); }
+          );
+        });
+        sendResponse({ dataUrl: dataUrl });
+      } catch (e) {
+        sendResponse({ error: String((e && e.message) || e) });
+      }
+    })();
+    return true;
+  }
+  // 把可见区域截图交给 content script 弹选区遮罩
+  if (msg.type === 'capture.visibleTab.start') {
+    (async () => {
+      try {
+        const tabs = await qTabs({ active: true, currentWindow: true });
+        const tab = tabs[0];
+        if (!tab) { sendResponse({ error: '无活动标签页' }); return; }
+        const dataUrl = await new Promise((res, rej) => {
+          chrome.tabs.captureVisibleTab(undefined, { format: 'png' }, (d) => {
+            const e = chrome.runtime.lastError; if (e) rej(new Error(e.message)); else res(d);
+          });
+        });
+        // 把截图发给 content script 让用户框选区域
+        await sendToTab(tab.id, { type: 'winocr.regionSelect', dataUrl: dataUrl });
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ error: String((e && e.message) || e) });
+      }
+    })();
+    return true;
+  }
   if (msg.type === 'ocr.viaHost') {
     // 浏览器侧的图片 OCR 交给宿主的本地 PP-OCRv6 引擎（快、离线、零 key）
     ocrViaHost(msg.dataUrl, msg.timeoutMs).then(

@@ -1,0 +1,9 @@
+{
+  "name": "com.winocr.host",
+  "description": "WinOCR-Html native host (Python)",
+  "path": "D:\\AI\\WinOCR-Html0.3 - \u526f\u672c\\native_host\\winocr_launcher.bat",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://nnflalndjkpcnodgnbjljabnhcocinep/"
+  ]
+}

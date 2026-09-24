@@ -42,6 +42,14 @@
   $('#displayMode').value = s.displayMode || 'inline';
   $('#nativeHost').checked = !!s.nativeHost;
   $('#mymemoryEmail').value = s.mymemoryEmail || '';
+  $('#ollamaUrl').value = s.ollamaUrl || 'http://localhost:11434';
+  $('#ollamaModel').value = s.ollamaModel || '';
+  // 若已有保存的 ollama 模型，确保它在下拉里
+  if (s.ollamaModel && !Array.prototype.some.call($('#ollamaModel').options, (o) => o.value === s.ollamaModel)) {
+    const o = document.createElement('option');
+    o.value = s.ollamaModel; o.textContent = s.ollamaModel + '（已保存）';
+    $('#ollamaModel').appendChild(o);
+  }
   $('#hotkey').value = s.hotkey || 'ctrl+shift+m';
   $('#quitHotkey').value = s.quitHotkey || 'ctrl+alt+q';
   $('#t_folder').checked = !!s.exportTargets.folder;
@@ -89,6 +97,8 @@
       hotkey: $('#hotkey').value.trim(),
       quitHotkey: $('#quitHotkey').value.trim(),
       mymemoryEmail: $('#mymemoryEmail').value.trim(),
+      ollamaUrl: $('#ollamaUrl').value.trim() || 'http://localhost:11434',
+      ollamaModel: $('#ollamaModel').value,
       obsidianUrl: $('#obsidianUrl').value,
       obsidianKey: $('#obsidianKey').value,
       lexiangEndpoint: $('#lexiangEndpoint').value,
@@ -115,7 +125,7 @@
   // 截图时报「未配置 SF key」，而用户在页面上明明填过。
   const FORM_FIELDS = ['#engine', '#translateEngine', '#sfKey', '#sfUrl', '#sfModel', '#sfOcrModel', '#ocrEngine',
     '#localOcrTier', '#srcLang', '#tgtLang', '#displayMode', '#hotkey', '#quitHotkey',
-    '#mymemoryEmail', '#obsidianUrl', '#obsidianKey', '#lexiangEndpoint',
+    '#mymemoryEmail', '#ollamaUrl', '#ollamaModel', '#obsidianUrl', '#obsidianKey', '#lexiangEndpoint',
     '#lexiangToken', '#nativeHost', '#t_folder', '#t_zip', '#t_obsidian', '#t_lexiang'];
   let formDirty = false;
   function markDirty() {
@@ -142,6 +152,37 @@
     const m = $('#msg');
     m.textContent = '已保存';
     setTimeout(() => { if (m.textContent === '已保存') m.textContent = ''; }, 2000);
+  };
+
+  // ---- Ollama 本地模型检测 ----
+  $('#ollamaDetect').onclick = async () => {
+    const el = $('#msg');
+    const ok = (t) => { el.classList.remove('err'); el.textContent = t; };
+    const bad = (t) => { el.classList.add('err'); el.textContent = t; };
+    ok('检测 Ollama 服务…');
+    try {
+      const url = $('#ollamaUrl').value.trim() || 'http://localhost:11434';
+      const models = await WINOCR.listOllamaModels({ ollamaUrl: url });
+      const sel = $('#ollamaModel');
+      const cur = sel.value;
+      sel.innerHTML = '';
+      if (!models.length) {
+        bad('Ollama 已连接，但没有可用模型。请先运行：ollama pull qwen2.5:7b');
+        return;
+      }
+      models.forEach((m) => {
+        const o = document.createElement('option');
+        o.value = m.name;
+        const gb = m.size ? (m.size / 1024 / 1024 / 1024).toFixed(1) + 'GB' : '';
+        o.textContent = m.name + (gb ? ' · ' + gb : '');
+        sel.appendChild(o);
+      });
+      if (cur && Array.prototype.some.call(sel.options, (o) => o.value === cur)) sel.value = cur;
+      ok('检测到 ' + models.length + ' 个本地模型，请选择一个并「保存」');
+    } catch (e) {
+      bad('检测失败：' + ((e && e.message) || e));
+    }
+    setTimeout(() => { el.textContent = ''; el.classList.remove('err'); }, 12000);
   };
 
   // ---- 浏览器内置 Translator API 辅助 ----
@@ -215,6 +256,14 @@
           srcLang: src, tgtLang: tgt, mymemoryEmail: $('#mymemoryEmail').value.trim()
         });
         ok('MyMemory 连接成功（免费 · 免 key）：' + t);
+      } else if ($('#engine').value === 'ollama') {
+        const model = $('#ollamaModel').value;
+        if (!model) { bad('请先点「检测本地模型」并选择一个模型'); return; }
+        const t = await WINOCR.translateOllama('Hello, world.', {
+          ollamaUrl: $('#ollamaUrl').value.trim(), ollamaModel: model,
+          srcLang: src, tgtLang: tgt
+        });
+        ok('Ollama 本地模型翻译成功：' + t);
       } else {
         const t = await WINOCR.translateSF('Hello, world.', {
           sfKey: $('#sfKey').value, sfUrl: $('#sfUrl').value, sfModel: $('#sfModel').value,

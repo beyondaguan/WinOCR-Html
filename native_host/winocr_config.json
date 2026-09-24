@@ -1,0 +1,14 @@
+{
+  "sfKey": "sk-adygsrwrjgfmrrxsltorbzneiljlnejxmnhmlngnkilkjxav",
+  "sfUrl": "https://api.siliconflow.cn/v1",
+  "sfModel": "Qwen/Qwen3-8B",
+  "sfOcrModel": "PaddlePaddle/PaddleOCR-VL-1.5",
+  "ocrEngine": "local",
+  "localOcrTier": "tiny",
+  "srcLang": "en",
+  "tgtLang": "zh",
+  "translateEngine": "mymemory",
+  "mymemoryEmail": "",
+  "hotkey": "alt+q",
+  "quitHotkey": "ctrl+alt+q"
+}

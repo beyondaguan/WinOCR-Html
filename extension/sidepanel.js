@@ -8,7 +8,7 @@
   function setBadge(engine) {
     const b = $('#engineBadge');
     if (!b) return;
-    const map = { browser: '浏览器内置', mymemory: 'MyMemory' };
+    const map = { browser: '浏览器内置', mymemory: 'MyMemory', ollama: '本地Ollama' };
     b.textContent = map[engine] || 'SiliconFlow';
   }
   function escapeHtml(t) { return (t || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
@@ -108,6 +108,8 @@
     try {
       const out = await WINOCR.translate(text, {
         engine: s.engine, sfKey: s.sfKey, sfUrl: s.sfUrl, sfModel: s.sfModel,
+        mymemoryEmail: s.mymemoryEmail,
+        ollamaUrl: s.ollamaUrl, ollamaModel: s.ollamaModel,
         srcLang: s.srcLang, tgtLang: s.tgtLang
       });
       showResult(text, out);
@@ -136,6 +138,26 @@
     } catch (e) { msg('取选中失败：' + e.message, true); }
   };
 
+  // 整页翻译：通知 content script 遍历正文并翻译
+  $('#fpTranslate').onclick = async () => {
+    try {
+      const tabs = await new Promise((r) => chrome.tabs.query({ active: true, currentWindow: true }, (t) => r(t || [])));
+      const tab = tabs[0]; if (!tab) return;
+      msg('正在翻译整页（可能需要几秒到几十秒）…');
+      $('#fpTranslate').disabled = true;
+      await new Promise((resolve) => chrome.tabs.sendMessage(tab.id, { type: 'winocr.fullpage' }, (x) => { void chrome.runtime.lastError; resolve(x); }));
+      setTimeout(() => { $('#fpTranslate').disabled = false; }, 2000);
+    } catch (e) { msg('整页翻译失败：' + e.message, true); $('#fpTranslate').disabled = false; }
+  };
+  $('#fpRestore').onclick = async () => {
+    try {
+      const tabs = await new Promise((r) => chrome.tabs.query({ active: true, currentWindow: true }, (t) => r(t || [])));
+      const tab = tabs[0]; if (!tab) return;
+      await new Promise((resolve) => chrome.tabs.sendMessage(tab.id, { type: 'winocr.fullpage.restore' }, (x) => { void chrome.runtime.lastError; resolve(x); }));
+      msg('已还原原文');
+    } catch (e) { msg('还原失败：' + e.message, true); }
+  };
+
   $('#saveRec').onclick = async () => {
     const o = currentOriginal() || ($('#input').value || '').trim();
     const t = currentTranslation();
@@ -157,6 +179,9 @@
       else if (m.type === 'panel-result') {
         showResult(m.original || '', m.translation || '', m.error || '');
         refresh();
+      } else if (m.type === 'winocr.regionCrop') {
+        // 浏览器内区域截图裁剪结果 → 走 OCR + 翻译
+        if (m.dataUrl) doOcr(m.dataUrl);
       }
     });
   } catch (e) {}
@@ -195,6 +220,8 @@
       const ocr = await runOcr(dataUrl, s);
       const tr = await WINOCR.translate(ocr, {
         engine: s.engine, sfKey: s.sfKey, sfUrl: s.sfUrl, sfModel: s.sfModel,
+        mymemoryEmail: s.mymemoryEmail,
+        ollamaUrl: s.ollamaUrl, ollamaModel: s.ollamaModel,
         srcLang: s.srcLang, tgtLang: s.tgtLang
       });
       showResult(ocr, tr);
@@ -213,6 +240,355 @@
   drop.addEventListener('drop', async (e) => { const f = e.dataTransfer.files[0]; if (f && f.type.startsWith('image/')) doOcr(await fileToDataUrl(f)); });
   $('#pick').onclick = () => $('#file').click();
   $('#file').onchange = async (e) => { const f = e.target.files[0]; if (f) doOcr(await fileToDataUrl(f)); };
+
+  // 浏览器内区域截图：捕获当前标签页可见区域 → 页面弹选区遮罩 → 裁剪回传 OCR
+  $('#captureTab').onclick = () => {
+    $('#captureTab').disabled = true;
+    msg('正在截取页面…');
+    try {
+      chrome.runtime.sendMessage({ type: 'capture.visibleTab.start' }, (r) => {
+        void chrome.runtime.lastError;
+        if (r && r.error) msg('截图失败：' + r.error, true);
+        // 选区裁剪结果由 chrome.runtime.onMessage('winocr.regionCrop') 接收
+      });
+    } catch (e) { msg('截图失败：' + e.message, true); }
+    setTimeout(() => { $('#captureTab').disabled = false; }, 1500);
+  };
+
+  // 视频双语字幕（YouTube）：开启/关闭实时字幕翻译
+  async function sendToActiveTab(msg) {
+    try {
+      const tabs = await new Promise((r) => chrome.tabs.query({ active: true, currentWindow: true }, (t) => r(t || [])));
+      const tab = tabs[0]; if (!tab) return null;
+      return await new Promise((res) => chrome.tabs.sendMessage(tab.id, msg, (x) => { void chrome.runtime.lastError; res(x); }));
+    } catch (e) { return null; }
+  }
+  $('#subOn').onclick = async () => {
+    const r = await sendToActiveTab({ type: 'winocr.subtitle.start' });
+    if (r && r.ok) msg('视频字幕翻译已开启（请先在 YouTube 打开字幕）');
+    else msg('当前页面不是 YouTube 或未开启字幕', true);
+  };
+  $('#subOff').onclick = async () => {
+    await sendToActiveTab({ type: 'winocr.subtitle.stop' });
+    msg('视频字幕翻译已关闭');
+  };
+
+  // PDF 翻译：提取文本 → 逐页翻译 → 双语结果显示在面板
+  $('#pickPdf').onclick = () => $('#pdfFile').click();
+  $('#pdfFile').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    $('#pickPdf').disabled = true;
+    setLoading('正在解析 PDF（首次会加载 PDF.js）…');
+    try {
+      s = await WINOCR.getSettings();
+      const pages = await WINOCR.extractPdfText(f, (cur, total) => {
+        setLoading('解析 PDF：第 ' + cur + ' / ' + total + ' 页');
+      });
+      const total = pages.length;
+      const results = [];
+      for (let i = 0; i < pages.length; i++) {
+        const p = pages[i];
+        setLoading('翻译第 ' + (i + 1) + ' / ' + total + ' 页…');
+        if (!p.text) { results.push({ page: p.page, orig: '', tr: '' }); continue; }
+        try {
+          const tr = await WINOCR.translate(p.text, {
+            engine: s.engine, sfKey: s.sfKey, sfUrl: s.sfUrl, sfModel: s.sfModel,
+            mymemoryEmail: s.mymemoryEmail,
+            ollamaUrl: s.ollamaUrl, ollamaModel: s.ollamaModel,
+            srcLang: s.srcLang, tgtLang: s.tgtLang
+          });
+          results.push({ page: p.page, orig: p.text, tr: tr });
+        } catch (err) {
+          results.push({ page: p.page, orig: p.text, tr: '翻译失败：' + err.message });
+        }
+      }
+      // 渲染双语结果到结果区
+      const el = $('#result');
+      el.classList.remove('is-empty');
+      el.innerHTML = results.map((r) =>
+        '<div style="margin-bottom:12px">' +
+        '<div class="lab" style="color:var(--faint)">第 ' + r.page + ' 页</div>' +
+        (r.orig ? '<div class="o" style="color:var(--muted);white-space:pre-wrap">' + escapeHtml(r.orig).slice(0, 500) + '</div>' : '') +
+        (r.tr ? '<div class="t" style="white-space:pre-wrap">' + escapeHtml(r.tr) + '</div>' : '') +
+        '</div>'
+      ).join('');
+      msg('PDF 翻译完成：共 ' + total + ' 页');
+    } catch (e) {
+      showResult('', '', 'PDF 翻译失败：' + e.message);
+    }
+    $('#pickPdf').disabled = false;
+    e.target.value = '';
+  };
+
+  // ---------------- AI 对话（持久化） ----------------
+  // 对话历史保存在 chrome.storage.local（K_CHAT_HISTORY），支持多轮、多对话切换、导出
+  let chatHistory = [
+    { role: 'system', content: '你是一个乐于助人的 AI 助手。可以帮用户翻译、解释、润色文本，回答问题。回答简洁明了。' }
+  ];
+  let currentChatId = null;   // 当前对话 id（null = 尚未保存的新对话）
+  let chatDirty = false;      // 是否有未保存的改动
+
+  const chatMsgsEl = () => $('#chatMsgs');
+
+  function chatAppend(role, text) {
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-msg ' + role;
+    wrap.style.cssText = role === 'user'
+      ? 'align-self:flex-end;max-width:85%;background:var(--accent-soft);border:1px solid var(--accent-line);border-radius:10px;padding:8px 10px;font-size:12px'
+      : 'align-self:flex-start;max-width:85%;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:8px 10px;font-size:12px';
+    wrap.textContent = text;
+    chatMsgsEl().appendChild(wrap);
+    chatMsgsEl().scrollTop = chatMsgsEl().scrollHeight;
+    return wrap;
+  }
+
+  async function chatPersist() {
+    if (!chatDirty) return;
+    try {
+      const engine = $('#chatEngine').value;
+      s = await WINOCR.getSettings();
+      const model = engine === 'ollama' ? s.ollamaModel : s.sfModel;
+      if (currentChatId) {
+        await WINOCR.saveChat(currentChatId, chatHistory, null, engine, model);
+      } else {
+        const title = (chatHistory[1] && chatHistory[1].content || '新对话').slice(0, 20);
+        const chat = await WINOCR.createChat(title, engine, model);
+        currentChatId = chat.id;
+        await WINOCR.saveChat(currentChatId, chatHistory, null, engine, model);
+      }
+      chatDirty = false;
+    } catch (e) { /* 保存失败不阻塞对话 */ }
+  }
+
+  async function chatSend() {
+    const input = $('#chatInput');
+    const text = (input.value || '').trim();
+    if (!text) return;
+    input.value = '';
+    chatAppend('user', text);
+    chatHistory.push({ role: 'user', content: text });
+    chatDirty = true;
+    const aiBubble = chatAppend('ai', '思考中…');
+    $('#chatSend').disabled = true;
+    try {
+      s = await WINOCR.getSettings();
+      const engine = $('#chatEngine').value;
+      const reply = await WINOCR.chat(chatHistory, {
+        engine: engine, sfKey: s.sfKey, sfUrl: s.sfUrl, sfModel: s.sfModel,
+        ollamaUrl: s.ollamaUrl, ollamaModel: s.ollamaModel
+      });
+      aiBubble.textContent = reply;
+      chatHistory.push({ role: 'assistant', content: reply });
+      chatDirty = true;
+      chatPersist();
+    } catch (e) {
+      aiBubble.textContent = '出错：' + ((e && e.message) || e);
+    }
+    $('#chatSend').disabled = false;
+  }
+  $('#chatSend').onclick = chatSend;
+  $('#chatInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); chatSend(); }
+  });
+  $('#chatClear').onclick = async () => {
+    // 删除当前对话并新建空白对话
+    if (currentChatId) {
+      try { await WINOCR.deleteChat(currentChatId); } catch (e) {}
+    }
+    currentChatId = null;
+    chatHistory = [
+      { role: 'system', content: '你是一个乐于助人的 AI 助手。可以帮用户翻译、解释、润色文本，回答问题。回答简洁明了。' }
+    ];
+    chatMsgsEl().innerHTML = '<div class="chat-msg ai" style="align-self:flex-start;max-width:85%;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:8px 10px;font-size:12px">已新建空白对话。</div>';
+    msg('已新建空白对话');
+  };
+  $('#chatNew').onclick = async () => {
+    // 保存当前对话后新建空白对话
+    await chatPersist();
+    currentChatId = null;
+    chatHistory = [
+      { role: 'system', content: '你是一个乐于助人的 AI 助手。可以帮用户翻译、解释、润色文本，回答问题。回答简洁明了。' }
+    ];
+    chatMsgsEl().innerHTML = '<div class="chat-msg ai" style="align-self:flex-start;max-width:85%;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:8px 10px;font-size:12px">已新建空白对话，输入消息即开始。</div>';
+    await chatLoadList();
+  };
+
+  // 加载历史对话列表
+  async function chatLoadList() {
+    try {
+      const list = await WINOCR.getChatList();
+      const el = $('#chatList');
+      if (!list.length) { el.innerHTML = '<div class="empty">暂无对话历史</div>'; return; }
+      el.innerHTML = list.sort((a, b) => b.updatedAt - a.updatedAt).map((c) =>
+        '<div class="item" style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;border-bottom:1px solid var(--border);cursor:pointer" data-chat-id="' + c.id + '">' +
+        '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(c.title) +
+        ' <span style="color:var(--faint);font-size:10px">' + c.messageCount + ' 条</span></span>' +
+        '<button data-export-md="' + c.id + '" style="font-size:10px;padding:0 4px;margin-left:4px">MD</button>' +
+        '<button data-export-json="' + c.id + '" style="font-size:10px;padding:0 4px">JSON</button>' +
+        '<button data-del-chat="' + c.id + '" style="font-size:10px;padding:0 4px;color:var(--err)">×</button></div>'
+      ).join('');
+    } catch (e) { /* ignore */ }
+  }
+
+  // 切换/删除/导出对话（事件委托）
+  document.addEventListener('click', async (e) => {
+    const loadBtn = e.target.closest('[data-chat-id]');
+    if (loadBtn && !e.target.closest('button')) {
+      const id = loadBtn.dataset.chatId;
+      try {
+        const chat = await WINOCR.getChat(id);
+        if (!chat) return;
+        currentChatId = chat.id;
+        chatHistory = chat.messages && chat.messages.length ? chat.messages : [
+          { role: 'system', content: '你是一个乐于助人的 AI 助手。可以帮用户翻译、解释、润色文本，回答问题。回答简洁明了。' }
+        ];
+        chatMsgsEl().innerHTML = '';
+        chatHistory.forEach((m) => {
+          if (m.role !== 'system') chatAppend(m.role, m.content);
+        });
+        $('#chatEngine').value = chat.engine || 'sf';
+        msg('已加载对话：' + chat.title);
+      } catch (err) { msg('加载失败：' + err.message, true); }
+      return;
+    }
+    const delBtn = e.target.closest('[data-del-chat]');
+    if (delBtn) {
+      const id = delBtn.dataset.delChat;
+      try {
+        await WINOCR.deleteChat(id);
+        if (currentChatId === id) {
+          currentChatId = null;
+          chatHistory = [
+            { role: 'system', content: '你是一个乐于助人的 AI 助手。可以帮用户翻译、解释、润色文本，回答问题。回答简洁明了。' }
+          ];
+          chatMsgsEl().innerHTML = '<div class="chat-msg ai" style="align-self:flex-start;max-width:85%;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:8px 10px;font-size:12px">已新建空白对话。</div>';
+        }
+        await chatLoadList();
+        msg('已删除对话');
+      } catch (err) { msg('删除失败：' + err.message, true); }
+      return;
+    }
+    const exportBtn = e.target.closest('[data-export-md], [data-export-json]');
+    if (exportBtn) {
+      const id = exportBtn.dataset.exportMd || exportBtn.dataset.exportJson;
+      const format = exportBtn.dataset.exportMd ? 'md' : 'json';
+      try {
+        const chat = await WINOCR.getChat(id);
+        if (!chat) return;
+        WINOCR.downloadChat(chat, format === 'md' ? 'markdown' : 'json');
+        msg('已导出 ' + (format === 'md' ? 'Markdown' : 'JSON'));
+      } catch (err) { msg('导出失败：' + err.message, true); }
+    }
+  });
+
+  await chatLoadList();
+
+  // ---------------- 学习（生词本 + SM-2 复习） ----------------
+  let reviewQueue = [];
+  let currentReviewIdx = 0;
+
+  async function studyRefreshStats() {
+    try {
+      const stats = await WINOCR.getStudyStats();
+      $('#studyStats').innerHTML =
+        '总词数 <b>' + stats.total + '</b> · 已掌握 <b style="color:var(--ok)">' + stats.mastered + '</b> · ' +
+        '学习中 <b style="color:var(--warn)">' + stats.learning + '</b> · 新词 <b>' + stats.newWords + '</b> · ' +
+        '今日复习 <b>' + stats.reviewedToday + '</b> · 平均掌握度 <b>' + stats.avgMastery + '</b>';
+    } catch (e) {
+      $('#studyStats').textContent = '加载失败：' + e.message;
+    }
+  }
+
+  $('#studyAuto').onclick = async () => {
+    $('#studyAuto').disabled = true;
+    msg('正在从历史记录采集生词…');
+    try {
+      const n = await WINOCR.autoCollectFromHistory(50);
+      msg('已采集 ' + n + ' 个生词');
+      await studyRefreshStats();
+    } catch (e) {
+      msg('采集失败：' + e.message, true);
+    }
+    $('#studyAuto').disabled = false;
+  };
+
+  $('#studyReview').onclick = async () => {
+    try {
+      reviewQueue = await WINOCR.getReviewQueue(20);
+      if (!reviewQueue.length) {
+        msg('当前没有待复习的生词');
+        $('#reviewArea').style.display = 'none';
+        return;
+      }
+      currentReviewIdx = 0;
+      $('#reviewArea').style.display = 'block';
+      studyShowReview();
+    } catch (e) {
+      msg('加载复习队列失败：' + e.message, true);
+    }
+  };
+
+  function studyShowReview() {
+    if (currentReviewIdx >= reviewQueue.length) {
+      $('#reviewArea').style.display = 'none';
+      msg('本轮复习完成！');
+      studyRefreshStats();
+      return;
+    }
+    const item = reviewQueue[currentReviewIdx];
+    $('#reviewWord').textContent = item.word;
+    $('#reviewTrans').textContent = item.translation || '（无译文）';
+    $('#reviewCtx').textContent = item.context || '';
+    $('#reviewCard').style.borderColor = 'var(--accent-line)';
+  }
+
+  // 复习评分按钮（事件委托）
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('#reviewArea [data-q]');
+    if (!btn) return;
+    const quality = parseInt(btn.dataset.q, 10);
+    const item = reviewQueue[currentReviewIdx];
+    if (!item) return;
+    try {
+      await WINOCR.submitReview(item.id, quality);
+      currentReviewIdx++;
+      studyShowReview();
+    } catch (err) {
+      msg('提交失败：' + err.message, true);
+    }
+  });
+
+  // 删除生词（事件委托）
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('#vocabList [data-del]');
+    if (!btn) return;
+    const id = btn.dataset.del;
+    try {
+      await WINOCR.removeVocab(id);
+      await studyRefreshStats();
+      msg('已删除生词');
+    } catch (err) {
+      msg('删除失败：' + err.message, true);
+    }
+  });
+
+  // 加载生词列表
+  async function studyLoadVocab() {
+    try {
+      const vocab = await WINOCR.getVocabList();
+      const el = $('#vocabList');
+      if (!vocab.length) { el.innerHTML = '<div class="empty">暂无生词</div>'; return; }
+      el.innerHTML = vocab.slice(-30).reverse().map((v) =>
+        '<div class="item" style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-bottom:1px solid var(--border)">' +
+        '<span><b>' + escapeHtml(v.word) + '</b> <span style="color:var(--muted);font-size:11px">' + escapeHtml(v.translation || '') + '</span> ' +
+        '<span style="font-size:10px;color:var(--faint)">' + (v.mastery * 100).toFixed(0) + '%</span></span>' +
+        '<button data-del="' + v.id + '" style="font-size:11px;padding:1px 6px">×</button></div>'
+      ).join('');
+    } catch (e) { /* ignore */ }
+  }
+
+  await studyRefreshStats();
+  await studyLoadVocab();
 
   // ---------------- 导出 ----------------
   document.querySelectorAll('[data-x]').forEach((btn) => {

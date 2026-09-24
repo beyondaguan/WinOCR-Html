@@ -25,14 +25,24 @@
   <select id="engine">
     <option value="sf">SiliconFlow（自带 key · 质量好）</option>
     <option value="mymemory">MyMemory（免费 · 免 key · 国内可直连）</option>
+    <option value="ollama">本地 Ollama（离线 · 隐私 · 零 key）</option>
     <option value="browser">浏览器内置（零 key · 离线，需 Edge/Chrome 138+）</option>
   </select>
   <div class="hint" style="margin-left:0">
     <b>SiliconFlow</b>：<code>Qwen/Qwen3-8B</code>，需填自己的 key；医疗/术语表现好（推荐）。<br>
     <b>MyMemory</b>：<b>免 key、国内可直连</b>，匿名约 5000 字符/天（填邮箱约 50000）；质量中等，零门槛兜底。<br>
+    <b>本地 Ollama</b>：完全离线、数据不出本机、零 API 费用；需自行安装运行 <a href="https://ollama.com" target="_blank">Ollama</a> 并拉取模型（如 <code>ollama pull qwen2.5:7b</code>）。<br>
     <b>浏览器内置</b>：需内核 138+，但语言包在 Google CDN 上，国内基本拉不动。<br>
     <span style="color:#999">（Google 非官方接口国内超时不可达；有道老接口 <code>/translate</code> 已失效返回网页 —— 两者都不必考虑。）</span>
   </div>
+
+  <label>Ollama 服务地址</label><input id="ollamaUrl" size="30" placeholder="http://localhost:11434" />
+  <label>Ollama 模型</label>
+  <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+    <select id="ollamaModel"><option value="">（先点右侧检测）</option></select>
+    <button id="ollamaDetect" type="button">检测本地模型</button>
+  </div>
+  <div class="hint" style="margin-left:0;margin-bottom:6px">需先启动 Ollama（<code>ollama serve</code> 或桌面端），再点「检测本地模型」拉取模型列表。</div>
 
   <label>MyMemory 邮箱</label><input id="mymemoryEmail" size="30" placeholder="可选：填了额度从 5000 → 50000" />
   <div class="hint" style="margin-left:0">仅 MyMemory 用：填一个邮箱（作为 <code>de=</code> 参数随请求发出），把每日免费额度从约 5000 提到约 50000 字符。</div>

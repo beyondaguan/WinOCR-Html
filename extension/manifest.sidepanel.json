@@ -19,6 +19,7 @@
     "https://api.siliconflow.cn/*",
     "https://api.mymemory.translated.net/*",
     "https://*.siliconflow.cn/*",
+    "https://cdnjs.cloudflare.com/*",
     "http://127.0.0.1/*",
     "http://localhost/*"
   ],

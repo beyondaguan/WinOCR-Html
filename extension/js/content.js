@@ -184,6 +184,7 @@
         const t = await WINOCR.translate(text, {
           engine: s.engine, sfKey: s.sfKey, sfUrl: s.sfUrl, sfModel: s.sfModel,
           mymemoryEmail: s.mymemoryEmail,
+          ollamaUrl: s.ollamaUrl, ollamaModel: s.ollamaModel,
           srcLang: s.srcLang, tgtLang: s.tgtLang
         });
         if (!b.isConnected) return;      // 气泡已被关掉/替换：别往孤儿节点写（那才是"看不见"的原因）
@@ -280,6 +281,86 @@
 
   document.addEventListener('mouseup', onSelect);
 
+  // ---------------- 实时悬停翻译（轻量 Tooltip） ----------------
+  // 在划词气泡的基础上，新增「鼠标悬停 + 已选文本」时的快速预览 Tooltip。
+  // 与 mouseup 气泡的区别：不抢占焦点、无按钮、鼠标移开即消失，适合"扫一眼译文"。
+  let hoverTip = null;
+  let hoverTimer = null;
+  let hoverLastText = '';
+  const HOVER_DELAY_MS = 350;        // 悬停多久后弹出
+  const HOVER_HIDE_DELAY_MS = 200;   // 鼠标移开后多久消失
+  let hoverHideTimer = null;
+
+  function removeHoverTip() {
+    if (hoverTip) { try { hoverTip.remove(); } catch (e) {} hoverTip = null; }
+  }
+  function clearHoverTimers() {
+    if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+    if (hoverHideTimer) { clearTimeout(hoverHideTimer); hoverHideTimer = null; }
+  }
+
+  function showHoverTip(text, x, y) {
+    removeHoverTip();
+    const el = document.createElement('div');
+    el.className = 'winocr-hover-tip';
+    el.textContent = '翻译中…';
+    document.body.appendChild(el);
+    hoverTip = el;
+    // 定位：鼠标右下方，避开屏幕边缘
+    const tipW = 280, tipH = 40;
+    let px = x + 14, py = y + 18;
+    if (px + tipW > window.innerWidth + window.scrollX) px = x - tipW - 14;
+    if (py + tipH > window.innerHeight + window.scrollY) py = y - tipH - 10;
+    el.style.left = Math.max(4, px) + 'px';
+    el.style.top = Math.max(4, py) + 'px';
+
+    (async () => {
+      try {
+        const s = await WINOCR.getSettings();
+        const t = await WINOCR.translate(text, {
+          engine: s.engine, sfKey: s.sfKey, sfUrl: s.sfUrl, sfModel: s.sfModel,
+          mymemoryEmail: s.mymemoryEmail,
+          ollamaUrl: s.ollamaUrl, ollamaModel: s.ollamaModel,
+          srcLang: s.srcLang, tgtLang: s.tgtLang
+        });
+        if (hoverTip === el) el.textContent = t;
+      } catch (e) {
+        if (hoverTip === el) el.textContent = '翻译失败：' + ((e && e.message) || e);
+      }
+    })();
+  }
+
+  function onMouseMove(e) {
+    // 只在"已有选中文本"时触发，避免无意义的请求
+    const sel = window.getSelection();
+    const text = sel ? sel.toString().trim() : '';
+    if (!text || text.length < 2) { clearHoverTimers(); removeHoverTip(); return; }
+    // 鼠标在气泡/Tooltip 内部时不处理（让用户能点按钮）
+    if (bubble && bubble.contains(e.target)) return;
+    if (hoverTip && hoverTip.contains(e.target)) {
+      // 在自己的 tooltip 上 → 取消隐藏计时
+      if (hoverHideTimer) { clearTimeout(hoverHideTimer); hoverHideTimer = null; }
+      return;
+    }
+    clearHoverTimers();
+    hoverLastText = text;
+    const cx = e.clientX, cy = e.clientY;
+    hoverTimer = setTimeout(() => {
+      // 再次确认选区还在（用户可能已经取消选择）
+      const sel2 = window.getSelection();
+      const t2 = sel2 ? sel2.toString().trim() : '';
+      if (t2 === text && text) showHoverTip(text, cx, cy);
+    }, HOVER_DELAY_MS);
+  }
+
+  function onMouseLeave() {
+    clearHoverTimers();
+    hoverHideTimer = setTimeout(removeHoverTip, HOVER_HIDE_DELAY_MS);
+  }
+
+  document.addEventListener('mousemove', onMouseMove);
+  document.addEventListener('mouseleave', onMouseLeave);
+
   // 供侧栏 / 后台读取选中文本；并接收「就地显示结果」（右键菜单 / Alt+Shift+Z）
   try {
     chrome.runtime.onMessage.addListener((m, sender, sendResponse) => {
@@ -301,9 +382,332 @@
       } else if (m.type === 'winocr.restoreInline') {
         restoreAllInline();
         sendResponse({ ok: true });
+      } else if (m.type === 'winocr.regionSelect') {
+        // 浏览器内区域截图：展示可见区域截图，让用户拖拽框选，然后裁剪回传
+        startRegionSelect(m.dataUrl);
+        sendResponse({ ok: true });
+      } else if (m.type === 'winocr.fullpage') {
+        // 整页翻译
+        fpRun();
+        sendResponse({ ok: true, started: true });
+        return true;   // fpRun 是异步的，但我们立即响应启动
+      } else if (m.type === 'winocr.fullpage.restore') {
+        fpRestore();
+        sendResponse({ ok: true });
+      } else if (m.type === 'winocr.subtitle.start') {
+        subStart();
+        sendResponse({ ok: subActive });
+      } else if (m.type === 'winocr.subtitle.stop') {
+        subStop();
+        sendResponse({ ok: true });
       }
     });
   } catch (e) {}
+
+  // ---------------- 浏览器内区域截图 ----------------
+  // 用 chrome.tabs.captureVisibleTab 拿到的整页可见截图做底图，用户拖拽画框，
+  // 松开后用 canvas 裁剪出选区并交给 sidepanel 做 OCR。
+  function startRegionSelect(dataUrl) {
+    if (!dataUrl) return;
+    removeBubble(); removeHoverTip();
+    const overlay = document.createElement('div');
+    overlay.className = 'winocr-region-overlay';
+    overlay.innerHTML =
+      '<img class="winocr-region-bg" />' +
+      '<div class="winocr-region-dim"></div>' +
+      '<div class="winocr-region-box"></div>' +
+      '<div class="winocr-region-hint">拖拽选择 OCR 区域 · 按 Esc 取消</div>';
+    document.body.appendChild(overlay);
+    const bg = overlay.querySelector('.winocr-region-bg');
+    const dim = overlay.querySelector('.winocr-region-dim');
+    const box = overlay.querySelector('.winocr-region-box');
+    bg.src = dataUrl;
+
+    let sx = 0, sy = 0, drawing = false;
+
+    function onDown(e) {
+      drawing = true;
+      sx = e.clientX; sy = e.clientY;
+      box.style.left = sx + 'px'; box.style.top = sy + 'px';
+      box.style.width = '0px'; box.style.height = '0px';
+      box.style.display = 'block';
+    }
+    function onMove(e) {
+      if (!drawing) return;
+      const x = Math.min(sx, e.clientX), y = Math.min(sy, e.clientY);
+      const w = Math.abs(e.clientX - sx), h = Math.abs(e.clientY - sy);
+      box.style.left = x + 'px'; box.style.top = y + 'px';
+      box.style.width = w + 'px'; box.style.height = h + 'px';
+    }
+    function onUp(e) {
+      if (!drawing) return;
+      drawing = false;
+      const x = Math.min(sx, e.clientX), y = Math.min(sy, e.clientY);
+      const w = Math.abs(e.clientX - sx), h = Math.abs(e.clientY - sy);
+      if (w < 5 || h < 5) { cleanup(); return; }
+      // 用 canvas 裁剪
+      const cv = document.createElement('canvas');
+      cv.width = w; cv.height = h;
+      const ctx = cv.getContext('2d');
+      const img = new Image();
+      img.onload = () => {
+        try {
+          ctx.drawImage(img, x, y, w, h, 0, 0, w, h);
+          const cropped = cv.toDataURL('image/png');
+          cleanup();
+          // 回传 sidepanel 做 OCR
+          try {
+            chrome.runtime.sendMessage({ type: 'winocr.regionCrop', dataUrl: cropped }, () => { void chrome.runtime.lastError; });
+          } catch (e) {}
+        } catch (e) { cleanup(); }
+      };
+      img.src = dataUrl;
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') cleanup();
+    }
+    function cleanup() {
+      try { overlay.remove(); } catch (e) {}
+      document.removeEventListener('keydown', onKey);
+    }
+    overlay.addEventListener('mousedown', onDown);
+    overlay.addEventListener('mousemove', onMove);
+    overlay.addEventListener('mouseup', onUp);
+    document.addEventListener('keydown', onKey);
+  }
+
+  // ---------------- 整页翻译 ----------------
+  // 智能识别正文区域 → 遍历文本节点 → 批量翻译 → 双语对照渲染
+  // 双语模式：译文插入原文下方（淡灰底），可一键还原
+  // 仅译文模式：原文替换为译文（可点回原文）
+  const FP_CLASS = 'winocr-fp';          // 已翻译的文本节点标记
+  const FP_ORIG_ATTR = 'data-winocr-orig';
+  let fpActive = false;                  // 当前是否处于整页翻译状态
+  let fpBusy = false;
+
+  // 估算元素的"正文得分"：文本量 × (1 - 链接密度)
+  function fpScore(el) {
+    const text = (el.innerText || '').trim();
+    if (!text || text.length < 30) return 0;
+    const links = el.querySelectorAll('a').length;
+    const linkDensity = links / Math.max(1, text.length / 20);
+    return text.length * Math.max(0, 1 - linkDensity * 0.5);
+  }
+
+  function fpFindMain() {
+    // 优先语义标签
+    const sem = document.querySelector('article, main, [role="main"], .post-content, .article-content, #content');
+    if (sem) return sem;
+    // 否则按得分选
+    const candidates = Array.from(document.querySelectorAll('div, section, article'))
+      .filter((e) => e.offsetParent !== null)
+      .map((e) => ({ el: e, score: fpScore(e) }))
+      .sort((a, b) => b.score - a.score);
+    return candidates[0] && candidates[0].score > 200 ? candidates[0].el : document.body;
+  }
+
+  // 收集正文区域内的可翻译文本节点（跳过 script/style/pre/code/已标记）
+  function fpCollectTextNodes(root) {
+    const skip = new Set(['SCRIPT', 'STYLE', 'PRE', 'CODE', 'NOSCRIPT', 'TEXTAREA', 'INPUT', 'BUTTON']);
+    const nodes = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(n) {
+        const p = n.parentElement;
+        if (!p) return NodeFilter.FILTER_REJECT;
+        if (skip.has(p.tagName)) return NodeFilter.FILTER_REJECT;
+        if (p.classList && p.classList.contains(FP_CLASS)) return NodeFilter.FILTER_REJECT;
+        const t = n.textContent.trim();
+        if (!t || t.length < 2) return NodeFilter.FILTER_REJECT;
+        // 跳过纯数字/符号
+        if (/^[\d\s\W]+$/.test(t)) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    let n;
+    while ((n = walker.nextNode())) nodes.push(n);
+    return nodes;
+  }
+
+  // 单个文本节点的翻译与渲染
+  async function fpTranslateNode(node) {
+    const orig = node.textContent.trim();
+    try {
+      const s = await WINOCR.getSettings();
+      const tr = await WINOCR.translate(orig, {
+        engine: s.engine, sfKey: s.sfKey, sfUrl: s.sfUrl, sfModel: s.sfModel,
+        mymemoryEmail: s.mymemoryEmail,
+        ollamaUrl: s.ollamaUrl, ollamaModel: s.ollamaModel,
+        srcLang: s.srcLang, tgtLang: s.tgtLang
+      });
+      if (!tr || tr === orig) return;
+      const span = document.createElement('span');
+      span.className = FP_CLASS;
+      span.setAttribute(FP_ORIG_ATTR, orig);
+      span.textContent = tr;
+      span.title = orig;
+      // 用 span 替换原文本节点
+      node.parentNode.replaceChild(span, node);
+    } catch (e) { /* 单个失败不影响其他 */ }
+  }
+
+  async function fpRun(mode) {
+    if (fpBusy) return;
+    fpBusy = true;
+    // 还原已翻译的（避免重复套娃）
+    fpRestore();
+    const root = fpFindMain();
+    const nodes = fpCollectTextNodes(root);
+    if (!nodes.length) { fpBusy = false; return; }
+
+    // 并发控制：同时最多 5 个请求
+    const CONCURRENCY = 5;
+    let idx = 0;
+    const workers = [];
+    for (let i = 0; i < CONCURRENCY; i++) {
+      workers.push((async () => {
+        while (idx < nodes.length) {
+          const cur = idx++;
+          await fpTranslateNode(nodes[cur]);
+        }
+      })());
+    }
+    await Promise.all(workers);
+    fpActive = true;
+    fpBusy = false;
+    // 通知后台进度完成
+    try { chrome.runtime.sendMessage({ type: 'winocr.fpDone', count: nodes.length }, () => { void chrome.runtime.lastError; }); } catch (e) {}
+  }
+
+  function fpRestore() {
+    const spans = document.querySelectorAll('.' + FP_CLASS);
+    spans.forEach((sp) => {
+      const orig = sp.getAttribute(FP_ORIG_ATTR);
+      if (orig != null) {
+        const tn = document.createTextNode(orig);
+        sp.parentNode.replaceChild(tn, sp);
+      } else {
+        sp.remove();
+      }
+    });
+    fpActive = false;
+  }
+
+  // ---------------- 视频双语字幕（YouTube / Bilibili / Netflix） ----------------
+  // 监听字幕 DOM（YouTube: .caption-window .ytp-caption-segment；
+  // Bilibili: .bilibili-player-video-subtitle .subtitle-item；
+  // Netflix: video.textTracks 轨道），实时翻译并在下方叠加译文。
+  // 不碰播放器 API，只做 DOM 观察 + 翻译叠加，兼容性最好。
+  const SUB_CLASS = 'winocr-sub-trans';
+  let subObserver = null;
+  let subActive = false;
+  let subLastText = '';
+  let subTransTimer = null;
+  let subPlatform = '';          // 'youtube' | 'bilibili' | 'netflix'
+  const SUB_DEBOUNCE_MS = 400;
+
+  // 各平台字幕文本选择器
+  const SUB_SELECTORS = {
+    youtube: '.caption-window .ytp-caption-segment, .ytp-caption-segment',
+    bilibili: '.bilibili-player-video-subtitle .subtitle-item, .bilibili-player-video-subtitle span, .subtitle-item span',
+    netflix: '.player-timedtext-text-container, .player-timedtext span, video::cue'
+  };
+
+  // 各平台字幕容器选择器（用于定位译文叠加位置）
+  const SUB_CONTAINER_SELECTORS = {
+    youtube: '.caption-window',
+    bilibili: '.bilibili-player-video-subtitle, .subtitle-item',
+    netflix: '.player-timedtext, .player-timedtext-text-container'
+  };
+
+  function subDetectPlatform() {
+    if (/youtube\.com|youtu\.be/.test(location.hostname)) return 'youtube';
+    if (/bilibili\.com/.test(location.hostname)) return 'bilibili';
+    if (/netflix\.com/.test(location.hostname)) return 'netflix';
+    return '';
+  }
+
+  function subGetCurrentText() {
+    const sel = SUB_SELECTORS[subPlatform] || SUB_SELECTORS.youtube;
+    const segs = document.querySelectorAll(sel);
+    return Array.from(segs).map((s) => s.textContent).join(' ').trim();
+  }
+
+  function subGetOrCreateOverlay() {
+    let ov = document.querySelector('.' + SUB_CLASS);
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.className = SUB_CLASS;
+      document.body.appendChild(ov);
+    }
+    return ov;
+  }
+
+  function subPositionOverlay() {
+    const ov = subGetOrCreateOverlay();
+    const capSel = SUB_CONTAINER_SELECTORS[subPlatform] || SUB_CONTAINER_SELECTORS.youtube;
+    const cap = document.querySelector(capSel);
+    if (!cap) { ov.style.display = 'none'; return; }
+    const r = cap.getBoundingClientRect();
+    ov.style.left = r.left + 'px';
+    ov.style.top = (r.bottom + window.scrollY + 4) + 'px';
+    ov.style.width = r.width + 'px';
+    ov.style.display = 'block';
+  }
+
+  async function subTranslate(text) {
+    if (!text || text === subLastText) return;
+    subLastText = text;
+    const ov = subGetOrCreateOverlay();
+    ov.textContent = '翻译中…';
+    try {
+      const s = await WINOCR.getSettings();
+      const t = await WINOCR.translate(text, {
+        engine: s.engine, sfKey: s.sfKey, sfUrl: s.sfUrl, sfModel: s.sfModel,
+        mymemoryEmail: s.mymemoryEmail,
+        ollamaUrl: s.ollamaUrl, ollamaModel: s.ollamaModel,
+        srcLang: s.srcLang, tgtLang: s.tgtLang
+      });
+      // 字幕可能已经切换，只在文本仍匹配时显示
+      if (subLastText === text) ov.textContent = t;
+    } catch (e) {
+      if (subLastText === text) ov.textContent = '';
+    }
+  }
+
+  function subOnMutations() {
+    if (!subActive) return;
+    const text = subGetCurrentText();
+    subPositionOverlay();
+    if (!text) {
+      subGetOrCreateOverlay().textContent = '';
+      subLastText = '';
+      return;
+    }
+    if (subTransTimer) clearTimeout(subTransTimer);
+    subTransTimer = setTimeout(() => subTranslate(text), SUB_DEBOUNCE_MS);
+  }
+
+  function subStart() {
+    if (subActive) return;
+    subPlatform = subDetectPlatform();
+    if (!subPlatform) return;
+    subActive = true;
+    subLastText = '';
+    const capSel = SUB_CONTAINER_SELECTORS[subPlatform] || SUB_CONTAINER_SELECTORS.youtube;
+    const target = document.querySelector(capSel) || document.body;
+    subObserver = new MutationObserver(subOnMutations);
+    subObserver.observe(target, { childList: true, subtree: true, characterData: true });
+    subOnMutations();
+  }
+
+  function subStop() {
+    subActive = false;
+    if (subObserver) { subObserver.disconnect(); subObserver = null; }
+    if (subTransTimer) { clearTimeout(subTransTimer); subTransTimer = null; }
+    const ov = document.querySelector('.' + SUB_CLASS);
+    if (ov) ov.remove();
+    subLastText = '';
+  }
 
   // 注入样式（仅一次）
   if (!document.getElementById('winocr-style')) {
@@ -332,7 +736,29 @@
       '.winocr-src::-webkit-scrollbar,.winocr-out::-webkit-scrollbar{width:10px;height:10px}' +
       '.winocr-src::-webkit-scrollbar-track,.winocr-out::-webkit-scrollbar-track{background:transparent}' +
       '.winocr-src::-webkit-scrollbar-thumb,.winocr-out::-webkit-scrollbar-thumb{' +
-      'background:rgba(18,24,31,.20);border-radius:100px;border:3px solid transparent;background-clip:content-box}';
+      'background:rgba(18,24,31,.20);border-radius:100px;border:3px solid transparent;background-clip:content-box}' +
+      // 悬停快速预览 Tooltip：深色、紧凑、无按钮，鼠标移开即消失
+      '.winocr-hover-tip{position:fixed;z-index:' + Z_INDEX_MAX + ';max-width:280px;padding:6px 10px;' +
+      'background:rgba(30,33,40,.96);color:#e8edf3;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.25);' +
+      'font:13px/1.55 system-ui,sans-serif;word-break:break-word;white-space:pre-wrap;' +
+      'pointer-events:none;animation:winocr-fadein .12s ease-out}' +
+      '@keyframes winocr-fadein{from{opacity:0;transform:translateY(2px)}to{opacity:1;transform:none}}' +
+      // 浏览器内区域截图遮罩
+      '.winocr-region-overlay{position:fixed;inset:0;z-index:' + Z_INDEX_MAX + ';cursor:crosshair}' +
+      '.winocr-region-bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}' +
+      '.winocr-region-dim{position:absolute;inset:0;background:rgba(0,0,0,.35);pointer-events:none}' +
+      '.winocr-region-box{position:absolute;border:2px dashed #1677ff;background:rgba(22,119,255,.08);' +
+      'box-shadow:0 0 0 9999px rgba(0,0,0,.15);display:none;pointer-events:none}' +
+      '.winocr-region-hint{position:absolute;top:12px;left:50%;transform:translateX(-50%);' +
+      'background:rgba(0,0,0,.7);color:#fff;padding:6px 14px;border-radius:6px;font:13px system-ui;pointer-events:none}' +
+      // 整页翻译：译文以淡色高亮，悬停显示原文（title 属性）
+      '.' + FP_CLASS + '{background:rgba(22,119,255,.06);border-bottom:1px dotted rgba(22,119,255,.4);' +
+      'border-radius:2px;transition:background .15s ease-out}' +
+      '.' + FP_CLASS + ':hover{background:rgba(22,119,255,.15)}' +
+      // 视频双语字幕译文层：在字幕下方，半透明深色背景，跟随字幕位置
+      '.winocr-sub-trans{position:absolute;z-index:' + Z_INDEX_MAX + ';background:rgba(0,0,0,.75);' +
+      'color:#fff;border-radius:4px;padding:3px 8px;font:14px/1.5 system-ui,sans-serif;' +
+      'text-align:center;pointer-events:none;text-shadow:0 1px 2px rgba(0,0,0,.8)}';
     document.documentElement.appendChild(st);
   }
 })();

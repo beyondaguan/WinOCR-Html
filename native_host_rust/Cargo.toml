@@ -1,0 +1,95 @@
+[package]
+name = "winocr-host-rust"
+version = "0.1.0"
+edition = "2021"
+description = "WinOCR-Html 本地壳程序（Rust 版）— 全局截图 + PP-OCRv6 OCR + 翻译 + 浮窗"
+license = "MIT"
+
+[[bin]]
+name = "winocr_host"
+path = "src/main.rs"
+
+[dependencies]
+# OCR 推理
+onnxruntime = "0.0.14"
+# Windows API 绑定
+winapi = { version = "0.3", features = [
+    "winuser",      # RegisterHotKey, GetAsyncKeyState, SetWindowsHookEx
+    "wingdi",       # GDI 绘制（BitBlt, CreateCompatibleDC 等）
+    "dxgi",         # DXGI Desktop Duplication
+    "dxgi1_2",     # IDXGIOutputDuplication
+    "d3d11",        # D3D11 设备
+    "winbase",      # CreateMutex（单实例保护）
+    "handleapi",    # CloseHandle
+    "errhandlingapi", # GetLastError
+    "synchapi",     # 同步原语
+    "combaseapi",   # CoInitializeEx
+    "objbase",      # COM 初始化
+    "unknwnbase",   # IUnknown
+    "guiddef",      # GUID
+    "dxgitype",     # DXGI 类型
+    "dxgiformat",   # DXGI_FORMAT
+    "windef",       # HWND, HDC 等基础类型
+    "minwindef",    # UINT, DWORD 等
+    "minwinbase",   # OVERLAPPED 等
+    "ntdef",        # NTSTATUS
+]}
+# JSON 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# 图像处理
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# 浮窗绘制（GPU 加速）
+winit = "0.30"
+wgpu = "0.20"
+pollster = "0.3"
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+# HTTP 客户端（调用本地翻译 API / Ollama）
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+# 错误处理
+thiserror = "1.0"
+anyhow = "1.0"
+# 日志
+env_logger = "0.11"
+log = "0.4"
+# 配置文件
+dirs = "5.0"
+# 剪贴板
+clipboard = "0.5"
+# Base64 编码
+base64 = "0.22"
+# 动态链接库加载
+libloading = "0.8"
+# 互斥锁
+parking_lot = "0.12"
+# 命令行参数解析
+clap = { version = "4.5", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_Globalization",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
+    "Win32_System_SystemInformation",
+    "Win32_System_LibraryLoader",
+    "Win32_Security",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Memory",
+    "Win32_System_Kernel",
+] }

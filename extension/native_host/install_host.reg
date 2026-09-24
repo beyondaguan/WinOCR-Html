@@ -1,0 +1,16 @@
+Windows Registry Editor Version 5.00
+
+; ============================================================
+; WinOCR-Html Native Host Registry Installer
+; ============================================================
+; 修改下面的路径为实际的 manifest.json 路径
+; 然后双击此文件导入注册表
+; ============================================================
+
+; Chrome Native Messaging Host
+[HKEY_CURRENT_USER\Software\Google\Chrome\NativeMessagingHosts\com.winocr_host]
+@="C:\\PATH\\TO\\com.winocr_host.json"
+
+; Edge Native Messaging Host
+[HKEY_CURRENT_USER\Software\Microsoft\Edge\NativeMessagingHosts\com.winocr_host]
+@="C:\\PATH\\TO\\com.winocr_host.json"

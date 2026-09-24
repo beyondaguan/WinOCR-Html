@@ -17,6 +17,7 @@ pub struct Config {
     pub translate_engine: String,
     pub hotkey: String,
     pub quit_hotkey: String,
+    pub settings_hotkey: String,
     pub mymemory_email: String,
     pub ollama_url: String,
     pub ollama_model: String,
@@ -79,8 +80,9 @@ impl Default for Config {
             src_lang: "en".to_string(),
             tgt_lang: "zh".to_string(),
             translate_engine: "sf".to_string(),
-            hotkey: "ctrl+shift+m".to_string(),
+            hotkey: "alt+q".to_string(),
             quit_hotkey: "ctrl+alt+q".to_string(),
+            settings_hotkey: "ctrl+alt+s".to_string(),
             mymemory_email: String::new(),
             ollama_url: "http://localhost:11434".to_string(),
             ollama_model: String::new(),
@@ -93,7 +95,7 @@ impl Default for Config {
 }
 
 /// 默认配置文件路径：exe 同目录下的 winocr_config.json
-fn default_config_path() -> anyhow::Result<String> {
+pub fn default_config_path() -> anyhow::Result<String> {
     let exe = std::env::current_exe().context("获取 exe 路径失败")?;
     let dir = exe.parent().context("获取 exe 目录失败")?;
     Ok(dir

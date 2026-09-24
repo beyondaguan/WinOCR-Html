@@ -7,6 +7,7 @@ mod hotkey;
 mod nm;
 mod ocr;
 mod screenshot;
+mod settings_window;
 mod translate;
 mod whisper;
 mod window;
@@ -55,56 +56,94 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// 独立模式：不依赖浏览器扩展，直接运行
-fn run_standalone(config: Config) -> anyhow::Result<()> {
+fn run_standalone(mut config: Config) -> anyhow::Result<()> {
     log::info!("进入独立模式");
 
-    // 注册全局热键
-    let _hotkey_tx = hotkey::register_hotkeys(&config)?;
+    // 配置文件路径（与 Config::load 默认一致：exe 同目录）
+    let config_path = config::default_config_path()?;
 
-    // 启动截图/OCR/翻译循环
+    // 注册全局热键（capture / settings / quit）
+    let mut manager = hotkey::HotkeyManager::new(&config)?;
+
+    // OCR / 翻译 / 浮窗 / 截图
     let mut ocr_engine = ocr::OcrEngine::new(&config)?;
     let translate_engine = translate::TranslateEngine::new(&config)?;
-
     let mut window = window::OverlayWindow::new(&config)?;
-
     let screenshot = screenshot::DxgiScreenshotter::new()?;
 
-    let hotkey_rx = {
-        let (_tx, rx) = std::sync::mpsc::channel();
-        rx
-    };
+    log::info!(
+        "独立模式就绪：截图={} 设置={} 退出={}",
+        config.hotkey,
+        config.settings_hotkey,
+        config.quit_hotkey
+    );
 
-    while RUNNING.load(Ordering::SeqCst) {
-        // 等待热键触发
-        match hotkey_rx.recv() {
+    loop {
+        match manager.receiver().recv() {
             Ok(hotkey::HotkeyEvent::Capture) => {
-                // 截图
+                // 截图（全屏）
                 log::info!("开始截图");
-                let img_data = screenshot.capture_region(hotkey::Region::default())?;
+                let region = hotkey::Region::full_screen();
+                match screenshot.capture_region(region) {
+                    Ok(img_data) => {
+                        // OCR 识别
+                        let text = match ocr_engine.recognize(&img_data) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                log::error!("OCR 失败: {}", e);
+                                String::new()
+                            }
+                        };
 
-                // OCR 识别
-                log::info!("开始 OCR 识别");
-                let text = ocr_engine.recognize(&img_data)?;
+                        // 翻译
+                        let translation = if !text.is_empty() {
+                            translate_engine.translate(&text).unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
 
-                // 翻译
-                let translation = if !text.is_empty() {
-                    translate_engine.translate(&text)?
-                } else {
-                    String::new()
-                };
-
-                // 浮窗显示
-                window.show_translation(&hotkey::Region::default(), &text, &translation);
+                        // 浮窗显示
+                        window.show_translation(&region, &text, &translation);
+                    }
+                    Err(e) => log::error!("截图失败: {}", e),
+                }
             }
             Ok(hotkey::HotkeyEvent::Quit) => {
                 log::info!("退出热键触发");
                 break;
             }
+            Ok(hotkey::HotkeyEvent::Settings) => {
+                log::info!("设置热键触发，打开设置窗口");
+                if let Some((capture, settings, quit)) = settings_window::show_settings(&config) {
+                    config.hotkey = capture;
+                    config.settings_hotkey = settings;
+                    config.quit_hotkey = quit;
+                    match manager.reconfigure(&config) {
+                        Ok(()) => {
+                            if let Err(e) = config.save(&config_path) {
+                                log::error!("保存配置失败: {}", e);
+                            } else {
+                                log::info!(
+                                    "热键已更新并保存：截图={} 设置={} 退出={}",
+                                    config.hotkey,
+                                    config.settings_hotkey,
+                                    config.quit_hotkey
+                                );
+                            }
+                        }
+                        Err(failed) => {
+                            log::error!("新热键注册失败（可能被占用），已回滚: {}", failed);
+                            // 回滚配置对象
+                            let old = Config::load(Some(&config_path))?;
+                            config.hotkey = old.hotkey;
+                            config.settings_hotkey = old.settings_hotkey;
+                            config.quit_hotkey = old.quit_hotkey;
+                        }
+                    }
+                }
+            }
             Ok(hotkey::HotkeyEvent::Translate) => {
                 log::info!("翻译热键触发（占位）");
-            }
-            Ok(hotkey::HotkeyEvent::Settings) => {
-                log::info!("设置热键触发（占位）");
             }
             Err(_) => break,
         }

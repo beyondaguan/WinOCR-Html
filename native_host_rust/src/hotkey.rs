@@ -45,18 +45,7 @@ pub struct HotkeyManager {
 impl HotkeyManager {
     /// Create and register hotkeys from config
     pub fn new(config: &Config) -> anyhow::Result<Self> {
-        let hotkeys = vec![
-            Hotkey {
-                modifiers: parse_modifiers(&config.hotkey),
-                key_code: parse_key(&config.hotkey),
-                id: HOTKEY_ID_CAPTURE,
-            },
-            Hotkey {
-                modifiers: parse_modifiers(&config.quit_hotkey),
-                key_code: parse_key(&config.quit_hotkey),
-                id: HOTKEY_ID_QUIT,
-            },
-        ];
+        let hotkeys = Self::build_hotkeys(config);
 
         // Create channel for hotkey events
         let (tx, rx) = channel::<HotkeyEvent>();
@@ -90,7 +79,6 @@ impl HotkeyManager {
         }
 
         // Start listener thread
-        let _thread_hotkeys = hotkeys.clone();
         let thread = thread::spawn(move || {
             let mut msg: MSG = unsafe { std::mem::zeroed() };
             loop {
@@ -127,21 +115,81 @@ impl HotkeyManager {
         })
     }
 
+    /// Build hotkey list from config (capture / quit / settings)
+    fn build_hotkeys(config: &Config) -> Vec<Hotkey> {
+        vec![
+            Hotkey {
+                modifiers: parse_modifiers(&config.hotkey),
+                key_code: parse_key(&config.hotkey),
+                id: HOTKEY_ID_CAPTURE,
+            },
+            Hotkey {
+                modifiers: parse_modifiers(&config.quit_hotkey),
+                key_code: parse_key(&config.quit_hotkey),
+                id: HOTKEY_ID_QUIT,
+            },
+            Hotkey {
+                modifiers: parse_modifiers(&config.settings_hotkey),
+                key_code: parse_key(&config.settings_hotkey),
+                id: HOTKEY_ID_SETTINGS,
+            },
+        ]
+    }
+
+    /// 热更新：注销旧热键并按新配置重新注册
+    /// 返回 Err(失败的热键描述) 供上层提示
+    pub fn reconfigure(&mut self, config: &Config) -> Result<(), String> {
+        let new_hotkeys = Self::build_hotkeys(config);
+
+        // 先注销全部旧热键
+        unsafe {
+            for hk in &self.hotkeys {
+                UnregisterHotKey(std::ptr::null_mut(), hk.id as i32);
+            }
+        }
+
+        // 注册新热键（失败则回滚到旧配置）
+        let mut failed: Vec<String> = Vec::new();
+        for hk in &new_hotkeys {
+            unsafe {
+                if RegisterHotKey(
+                    std::ptr::null_mut(),
+                    hk.id as i32,
+                    hk.modifiers,
+                    hk.key_code as u32,
+                ) == 0
+                {
+                    failed.push(format!("id={}(0x{:X}+0x{:X})", hk.id, hk.modifiers, hk.key_code));
+                }
+            }
+        }
+
+        if failed.is_empty() {
+            self.hotkeys = new_hotkeys;
+            log::info!("Hotkeys reconfigured OK");
+            Ok(())
+        } else {
+            // 回滚：注销刚才注册成功的新键，恢复旧键
+            unsafe {
+                for hk in &new_hotkeys {
+                    UnregisterHotKey(std::ptr::null_mut(), hk.id as i32);
+                }
+                for hk in &self.hotkeys {
+                    RegisterHotKey(
+                        std::ptr::null_mut(),
+                        hk.id as i32,
+                        hk.modifiers,
+                        hk.key_code as u32,
+                    );
+                }
+            }
+            Err(failed.join(", "))
+        }
+    }
+
     /// Get receiver for hotkey events
     pub fn receiver(&self) -> &Receiver<HotkeyEvent> {
         &self.rx
-    }
-
-    /// Try to receive a hotkey event (non-blocking)
-    #[allow(dead_code)]
-    pub fn try_recv(&self) -> Option<HotkeyEvent> {
-        self.rx.try_recv().ok()
-    }
-
-    /// Wait for a hotkey event (blocking)
-    #[allow(dead_code)]
-    pub fn recv(&self) -> Option<HotkeyEvent> {
-        self.rx.recv().ok()
     }
 }
 
@@ -234,16 +282,6 @@ fn parse_key(hotkey: &str) -> u16 {
     }
 }
 
-/// Register hotkeys and return sender (legacy API for compatibility)
-pub fn register_hotkeys(config: &Config) -> anyhow::Result<Sender<HotkeyEvent>> {
-    let manager = HotkeyManager::new(config)?;
-    let _rx = manager.receiver();
-    // This is a bit of a hack - we need to keep the manager alive
-    // In practice, you'd store the manager somewhere
-    let (tx, _rx2) = channel::<HotkeyEvent>();
-    Ok(tx)
-}
-
 /// Wait for capture event (blocking)
 #[allow(dead_code)]
 pub fn wait_for_capture(rx: &Receiver<HotkeyEvent>) -> Option<Region> {
@@ -260,6 +298,24 @@ pub struct Region {
     pub y: i32,
     pub w: i32,
     pub h: i32,
+}
+
+impl Region {
+    /// 全屏区域（主屏）
+    pub fn full_screen() -> Self {
+        unsafe {
+            Self {
+                x: 0,
+                y: 0,
+                w: winapi::um::winuser::GetSystemMetrics(
+                    winapi::um::winuser::SM_CXSCREEN,
+                ),
+                h: winapi::um::winuser::GetSystemMetrics(
+                    winapi::um::winuser::SM_CYSCREEN,
+                ),
+            }
+        }
+    }
 }
 
 /// Virtual key code constants (Windows VK_*)

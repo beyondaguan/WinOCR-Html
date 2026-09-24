@@ -1,86 +1,74 @@
 @echo off
-chcp 65001 >nul 2>&1
 REM ============================================================
-REM 快捷键冲突检测工具
-REM ============================================================
-REM 检测当前系统已注册的热键，避免冲突
+REM Hotkey Conflict Detection Tool
 REM ============================================================
 
 echo ========================================
-echo 快捷键冲突检测工具
+echo Hotkey Conflict Detection Tool
 echo ========================================
 echo.
 
-REM 检测常见热键冲突
-echo 正在检测系统热键注册情况...
+echo Scanning system for registered hotkeys...
 echo.
 
-REM 常见冲突热键列表
-set CONFLICT_LIST="Ctrl+Shift+M Ctrl+Alt+Q Ctrl+Shift+A Ctrl+Shift+Z Ctrl+Shift+X Ctrl+Shift+S Ctrl+Alt+S Ctrl+Alt+M"
-
-echo.
-echo 常见冲突热键：
-echo   Ctrl+Shift+M  - 可能与其他扩展冲突
-echo   Ctrl+Alt+Q    - 可能被 QQ/微信占用
-echo   Ctrl+Shift+A  - 可能被 IDE 占用
-echo   Ctrl+Shift+Z  - 撤销操作（通用）
-echo   Ctrl+Shift+X  - 剪切操作（通用）
-echo   Ctrl+Shift+S  - 另存为（通用）
-echo   Ctrl+Alt+S    - 可能被截图软件占用
-echo   Ctrl+Alt+M    - 可能被输入法占用
+echo Common conflict hotkeys:
+echo   Ctrl+Shift+M  - May conflict with extensions
+echo   Ctrl+Alt+Q    - May conflict with QQ/WeChat
+echo   Ctrl+Shift+A  - May conflict with IDE
+echo   Ctrl+Shift+Z  - Undo (common)
+echo   Ctrl+Shift+X  - Cut (common)
+echo   Ctrl+Shift+S  - Save As (common)
+echo   Ctrl+Alt+S    - May conflict with screenshot tools
+echo   Ctrl+Alt+M    - May conflict with IME
 echo.
 
-echo 推荐热键组合（低冲突风险）：
-echo   Win+Shift+A  - 截图 OCR
-echo   Win+Shift+Z  - 翻译选中
-echo   Ctrl+Alt+W   - 打开面板
-echo   F6            - 截图（单键）
-echo   F7            - 翻译（单键）
+echo Recommended hotkeys (low conflict risk):
+echo   Win+Shift+A  - Screenshot OCR
+echo   Win+Shift+Z  - Translate selection
+echo   Ctrl+Alt+W   - Open panel
+echo   F6            - Screenshot (single key)
+echo   F7            - Translate (single key)
 echo.
 
 echo ========================================
-echo 注册表检测
+echo Registry Scan
 echo ========================================
 echo.
 
-REM 检测 Chrome 扩展注册的热键
-echo [Chrome 扩展热键]
-reg query "HKCU\Software\Google\Chrome\Extensions" /s 2>nul | findstr /i "hotkey" || echo   未找到 Chrome 热键注册
+echo [Chrome Extensions]
+reg query "HKCU\Software\Google\Chrome\Extensions" /s 2>nul | findstr /i "hotkey" || echo   No Chrome hotkey found
 
-REM 检测 AutoHotkey 脚本
 echo.
-echo [AutoHotkey 检测]
+echo [AutoHotkey]
 tasklist /fi "imagename eq autohotkey.exe" 2>nul | findstr /i "autohotkey" >nul
 if %ERRORLEVEL% equ 0 (
-    echo   ⚠️ 检测到 AutoHotkey 运行，可能占用热键
+    echo   [WARN] AutoHotkey detected
 ) else (
-    echo   ✓ 未检测到 AutoHotkey
+    echo   [OK] No AutoHotkey
 )
 
-REM 检测常见截图软件
 echo.
-echo [截图软件检测]
+echo [Screenshot Tools]
 tasklist /fi "imagename eq SnippingTool.exe" 2>nul | findstr /i "SnippingTool" >nul
-if %ERRORLEVEL% equ 0 echo   ⚠️ Windows 截图工具运行中
+if %ERRORLEVEL% equ 0 echo   [WARN] Windows Snipping Tool
 
 tasklist /fi "imagename eq ShareX.exe" 2>nul | findstr /i "ShareX" >nul
-if %ERRORLEVEL% equ 0 echo   ⚠️ ShareX 运行中（可能占用 PrintScreen）
+if %ERRORLEVEL% equ 0 echo   [WARN] ShareX
 
 tasklist /fi "imagename eq Greenshot.exe" 2>nul | findstr /i "Greenshot" >nul
-if %ERRORLEVEL% equ 0 echo   ⚠️ Greenshot 运行中
+if %ERRORLEVEL% equ 0 echo   [WARN] Greenshot
 
-REM 检测即时通讯软件
 echo.
-echo [即时通讯软件检测]
+echo [IM Software]
 tasklist /fi "imagename eq WeChat.exe" 2>nul | findstr /i "WeChat" >nul
-if %ERRORLEVEL% equ 0 echo   ⚠️ 微信运行中（Ctrl+Alt+A 截图冲突）
+if %ERRORLEVEL% equ 0 echo   [WARN] WeChat (Ctrl+Alt+A conflict)
 
 tasklist /fi "imagename eq QQ.exe" 2>nul | findstr /i "QQ" >nul
-if %ERRORLEVEL% equ 0 echo   ⚠️ QQ 运行中（Ctrl+Alt+A 截图冲突）
+if %ERRORLEVEL% equ 0 echo   [WARN] QQ (Ctrl+Alt+A conflict)
 
 echo.
 echo ========================================
-echo 检测完成
+echo Scan Complete
 echo ========================================
 echo.
 pause

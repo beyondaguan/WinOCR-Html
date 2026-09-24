@@ -102,14 +102,9 @@ $installButton.Add_Click({
         $form.Text = "Registering native host..."
         $manifestSrc = "$installDir\extension\native_host\com.winocr_host.json"
         $manifestTemp = "$env:TEMP\com.winocr_host.json"
+        $manifest = Get-Content $manifestSrc -Raw
         $exePath = "$installDir\extension\native_host\winocr_host.exe" -replace '\\', '/'
-        $manifest = @{
-            name = "com.winocr_host"
-            description = "WinOCR-Html Native Host"
-            path = $exePath
-            type = "stdio"
-            allowed_origins = @("chrome-extension://*/")
-        } | ConvertTo-Json
+        $manifest = $manifest -replace 'winocr_host.exe', $exePath
         Set-Content -Path $manifestTemp -Value $manifest
         
         reg add "HKCU\Software\Google\Chrome\NativeMessagingHosts\com.winocr_host" /ve /d "$manifestTemp" /f | Out-Null

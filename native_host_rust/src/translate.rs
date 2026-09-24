@@ -3,7 +3,7 @@
 
 use crate::config::Config;
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 pub struct TranslateEngine {
@@ -43,7 +43,7 @@ impl TranslateEngine {
             temperature: f32,
             max_tokens: u32,
         }
-        #[derive(Serialize)]
+        #[derive(Serialize, Deserialize)]
         struct SfMessage {
             role: String,
             content: String,
@@ -90,13 +90,15 @@ impl TranslateEngine {
     }
 
     fn translate_mymemory(&self, text: &str) -> Result<String> {
-        // MyMemory 免费翻译（国内可直连、免 key）
+        // 简单 URL 编码
+        let encoded_text = url_encode(text);
+        let encoded_email = url_encode(&self.config.mymemory_email);
         let url = format!(
             "https://api.mymemory.translated.net/get?q={}&langpair={}|{}&de={}",
-            urlencoding::encode(text),
+            encoded_text,
             self.config.src_lang,
             self.config.tgt_lang,
-            urlencoding::encode(&self.config.mymemory_email)
+            encoded_email
         );
         #[derive(Deserialize)]
         struct MmResponse {
@@ -160,4 +162,20 @@ impl Default for TranslateEngine {
             client: reqwest::blocking::Client::new(),
         })
     }
+}
+
+/// 简单 URL 编码（百分编码）
+fn url_encode(input: &str) -> String {
+    let mut result = String::new();
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(byte as char);
+            }
+            _ => {
+                result.push_str(&format!("%{:02X}", byte));
+            }
+        }
+    }
+    result
 }

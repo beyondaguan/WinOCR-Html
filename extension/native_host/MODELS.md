@@ -1,99 +1,45 @@
-# WinOCR-Html 模型下载
+# WinOCR-Html 模型说明
 
-## 快速下载
+## 内置模型（无需下载）
 
-### 自动脚本（推荐）
+安装包已内置 PP-OCRv6 tiny 模型集，安装后即可本地 OCR（中英文+数字），无需联网：
 
-1. **配置代理**（如需）：编辑 `download_models.bat`，取消注释并修改代理地址：
-   ```bat
-   set HTTP_PROXY=http://127.0.0.1:7890
-   set HTTPS_PROXY=http://127.0.0.1:7890
-   ```
+| 文件 | 大小 | 说明 |
+|------|------|------|
+| `models/ocr/det_tiny.onnx` | 1.8 MB | 文本检测 |
+| `models/ocr/rec_tiny.onnx` | 4.5 MB | 文本识别 |
+| `models/ocr/ppocr_dict.txt` | 27 KB | 识别字典（6904 字符） |
+| `onnxruntime.dll` | 17.8 MB | ONNX Runtime 1.28.0 |
 
-2. **运行下载**：
-   ```bash
-   cd extension/native_host
-   download_models.bat
-   ```
+## 可选：medium 高精度模型（~60 MB）
 
-3. **选择模型**：
-   - `1` - tiny (6.6MB, 推荐, 速度快)
-   - `2` - medium (133MB, 更准确)
-   - `3` - 全部下载
+如需更高精度，运行 `download_models.bat` 选择 `1`，将下载：
 
-### 手动下载
+| 文件 | 说明 |
+|------|------|
+| `models/ocr/det_medium.onnx` | 检测（medium） |
+| `models/ocr/rec_medium.onnx` | 识别（medium） |
+| `models/ocr/ppocr_dict_medium.txt` | medium 专用字典（与 tiny 字典不同，必须配套） |
 
-如果自动脚本失败，可手动下载：
+下载后在扩展设置中将 OCR tier 切换为 `medium`。
 
-1. 访问 HuggingFace 镜像：[https://hf-mirror.com/onnx-community/PaddleOCRv6](https://hf-mirror.com/onnx-community/PaddleOCRv6)
+## 模型来源
 
-2. 下载以下文件到 `models/ocr/` 目录：
-
-   | 模型 | 文件名 | 大小 |
-   |------|--------|------|
-   | 检测 (tiny) | `det_tiny.onnx` | 3.3 MB |
-   | 识别 (tiny) | `rec_tiny.onnx` | 3.3 MB |
-   | 检测 (medium) | `det_medium.onnx` | 66 MB |
-   | 识别 (medium) | `rec_medium.onnx` | 67 MB |
-
-3. 字典文件（必需）：
-   - `ppocr_keys_v1.txt` (汉字字典)
+https://hf-mirror.com/xberg-io/paddleocr-onnx-models （HuggingFace 国内镜像）
 
 ## 代理配置
 
-### 方式一：环境变量（推荐）
+如下载失败，编辑 `download_models.bat`，取消注释并修改：
 
-```powershell
-# PowerShell
-$env:HTTP_PROXY = "http://127.0.0.1:7890"
-$env:HTTPS_PROXY = "http://127.0.0.1:7890"
-
-# CMD
+```bat
 set HTTP_PROXY=http://127.0.0.1:7890
 set HTTPS_PROXY=http://127.0.0.1:7890
 ```
 
-### 方式二：修改配置文件
-
-编辑 `native_host/winocr_config.json`：
-
-```json
-{
-  "proxy_url": "http://127.0.0.1:7890",
-  "models": {
-    "base_url": "https://hf-mirror.com",
-    "proxy_enabled": true
-  }
-}
-```
-
-### 方式三：使用 HuggingFace 镜像
-
-设置环境变量使用国内镜像：
-
-```powershell
-$env:HF_ENDPOINT = "https://hf-mirror.com"
-```
-
-## 模型来源
-
-| 来源 | URL | 说明 |
-|------|-----|------|
-| HuggingFace 镜像 | https://hf-mirror.com | 国内推荐 |
-| GitHub 镜像 | https://github.com.cnpmjs.org | 备选 |
-| 官方源 | https://huggingface.co | 需要代理 |
-
-## 验证安装
-
-下载完成后，运行宿主程序检测模型：
+## 手动下载
 
 ```bash
-cd native_host_rust
-cargo run --release -- --standalone
-```
-
-如果模型加载成功，日志会显示：
-```
-模型加载成功: det_tiny.onnx (输入: 1, 输出: 1)
-模型加载成功: rec_tiny.onnx (输入: 1, 输出: 1)
+curl -L -o det_medium.onnx  https://hf-mirror.com/xberg-io/paddleocr-onnx-models/resolve/main/v6/det/medium/model.onnx
+curl -L -o rec_medium.onnx  https://hf-mirror.com/xberg-io/paddleocr-onnx-models/resolve/main/v6/rec/medium/model.onnx
+curl -L -o ppocr_dict_medium.txt https://hf-mirror.com/xberg-io/paddleocr-onnx-models/resolve/main/v6/rec/medium/dict.txt
 ```

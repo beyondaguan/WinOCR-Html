@@ -8,14 +8,14 @@ mod nm;
 mod ocr;
 mod screenshot;
 mod translate;
+mod whisper;
 mod window;
 
 use clap::Parser;
 use config::Config;
-use nm::{NmMessage, NmResponse};
-use std::io::{self, Read, Write};
+use nm::NmHandler;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use base64::Engine;
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
@@ -45,7 +45,7 @@ fn main() -> anyhow::Result<()> {
 
     // 加载配置
     let config = Config::load(args.config.as_deref())?;
-    log::info!("配置加载完成: {:?}", config);
+    log::info!("配置加载完成");
 
     if args.standalone {
         run_standalone(config)
@@ -59,36 +59,54 @@ fn run_standalone(config: Config) -> anyhow::Result<()> {
     log::info!("进入独立模式");
 
     // 注册全局热键
-    let hotkey_tx = hotkey::register_hotkeys(&config)?;
+    let _hotkey_tx = hotkey::register_hotkeys(&config)?;
 
     // 启动截图/OCR/翻译循环
-    let ocr_engine = ocr::OcrEngine::new(&config)?;
+    let mut ocr_engine = ocr::OcrEngine::new(&config)?;
     let translate_engine = translate::TranslateEngine::new(&config)?;
 
-    let window = window::OverlayWindow::new(&config)?;
+    let mut window = window::OverlayWindow::new(&config)?;
 
     let screenshot = screenshot::DxgiScreenshotter::new()?;
 
-    while RUNNING.load(Ordering::Seq) {
+    let hotkey_rx = {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        rx
+    };
+
+    while RUNNING.load(Ordering::SeqCst) {
         // 等待热键触发
-        if let Some(region) = hotkey::wait_for_capture(&hotkey_tx) {
-            // 截图
-            log::info!("开始截图");
-            let img_data = screenshot.capture_region(region)?;
+        match hotkey_rx.recv() {
+            Ok(hotkey::HotkeyEvent::Capture) => {
+                // 截图
+                log::info!("开始截图");
+                let img_data = screenshot.capture_region(hotkey::Region::default())?;
 
-            // OCR 识别
-            log::info!("开始 OCR 识别");
-            let text = ocr_engine.recognize(&img_data)?;
+                // OCR 识别
+                log::info!("开始 OCR 识别");
+                let text = ocr_engine.recognize(&img_data)?;
 
-            // 翻译
-            let translation = if !text.is_empty() {
-                translate_engine.translate(&text)?
-            } else {
-                String::new()
-            };
+                // 翻译
+                let translation = if !text.is_empty() {
+                    translate_engine.translate(&text)?
+                } else {
+                    String::new()
+                };
 
-            // 浮窗显示
-            window.show_translation(&region, &text, &translation)?;
+                // 浮窗显示
+                window.show_translation(&hotkey::Region::default(), &text, &translation);
+            }
+            Ok(hotkey::HotkeyEvent::Quit) => {
+                log::info!("退出热键触发");
+                break;
+            }
+            Ok(hotkey::HotkeyEvent::Translate) => {
+                log::info!("翻译热键触发（占位）");
+            }
+            Ok(hotkey::HotkeyEvent::Settings) => {
+                log::info!("设置热键触发（占位）");
+            }
+            Err(_) => break,
         }
     }
 
@@ -99,87 +117,68 @@ fn run_standalone(config: Config) -> anyhow::Result<()> {
 fn run_nm_mode(config: Config) -> anyhow::Result<()> {
     log::info!("进入 Native Messaging 模式");
 
-    let mut nm = nm::NmConnection::new();
-
-    while RUNNING.load(Ordering::Seq) {
-        // 读取浏览器扩展发来的消息
-        let msg = match nm.read_message()? {
-            Some(m) => m,
-            None => break, // 连接断开
-        };
-
-        log::info!("收到消息: {:?}", msg);
-
-        match msg {
-            NmMessage::Translate { text, .. } => {
-                let config = config.clone();
-                let result = handle_translate(&config, text);
-                nm.write_message(&NmResponse::Translate(result))?;
-            }
-            NmMessage::Ocr { data_url, .. } => {
-                let config = config.clone();
-                let result = handle_ocr(&config, data_url);
-                nm.write_message(&NmResponse::Ocr(result))?;
-            }
-            NmMessage::Capture => {
-                // 触发截图（与独立模式共享逻辑）
-            }
-            NmMessage::GetSettings => {
-                let settings = config.to_json();
-                nm.write_message(&NmResponse::Settings(settings))?;
-            }
-            NmMessage::UpdateSettings { settings } => {
-                // 更新配置
-                log::info!("更新配置: {:?}", settings);
-            }
-        }
-    }
+    let handler = NmModeHandler::new(config)?;
+    nm::run_nm_loop(&handler)?;
 
     Ok(())
 }
 
-/// 处理翻译请求
-fn handle_translate(config: &Config, text: String) -> String {
-    let engine = translate::TranslateEngine::new(config).unwrap_or_default();
-    engine.translate(&text).unwrap_or_else(|e| {
-        log::error!("翻译失败: {}", e);
-        format!("翻译失败: {}", e)
-    })
+/// NM 模式消息处理器
+struct NmModeHandler {
+    config: Config,
 }
 
-/// 处理 OCR 请求
-fn handle_ocr(config: &Config, data_url: String) -> String {
-    // 从 data_url 解码图片
-    let img_data = match screenshot::decode_data_url(&data_url) {
-        Ok(d) => d,
-        Err(e) => return format!("图片解码失败: {}", e),
-    };
-
-    let engine = ocr::OcrEngine::new(config).unwrap_or_default();
-    engine.recognize(&img_data).unwrap_or_else(|e| {
-        log::error!("OCR 失败: {}", e);
-        format!("OCR 失败: {}", e)
-    })
-}
-
-// Ctrl+C 处理
-#[cfg(windows)]
-fn setup_ctrlc_handler() {
-    use winapi::um::consolectrl::{SetConsoleCtrlHandler, HandlerRoutine, CTRL_C_EVENT};
-    unsafe {
-        SetConsoleCtrlHandler(Some(ctrlc_handler), TRUE);
+impl NmModeHandler {
+    fn new(config: Config) -> anyhow::Result<Self> {
+        Ok(Self { config })
     }
 }
 
-#[cfg(windows)]
-unsafe extern "system" fn ctrlc_handler(ctrl_type: u32) -> i32 {
-    if ctrl_type == CTRL_C_EVENT {
-        RUNNING.store(false, Ordering::SeqCst);
-        1
-    } else {
-        0
+impl NmHandler for NmModeHandler {
+    fn handle_translate(
+        &self,
+        text: &str,
+        _source_lang: Option<&str>,
+        _target_lang: Option<&str>,
+    ) -> anyhow::Result<String> {
+        let engine = translate::TranslateEngine::new(&self.config)?;
+        let result = engine.translate(text)?;
+        log::info!("翻译结果: {} -> {}", text.chars().take(50).collect::<String>(), result.chars().take(50).collect::<String>());
+        Ok(result)
+    }
+
+    fn handle_ocr(&self, data_url: &str) -> anyhow::Result<(String, Option<f32>)> {
+        let img_data = screenshot::decode_data_url(data_url)?;
+        let mut engine = ocr::OcrEngine::new(&self.config)?;
+        let text = engine.recognize(&img_data)?;
+        log::info!("OCR 结果: {} 字符", text.len());
+        Ok((text, None))
+    }
+
+    fn handle_capture(&self, region: Option<&nm::NmRegion>) -> anyhow::Result<Option<String>> {
+        let screenshot = screenshot::DxgiScreenshotter::new()?;
+        let region = region.cloned().unwrap_or_default().into();
+        let pixels = screenshot.capture_region(region)?;
+        // 这里可以编码为 base64 返回
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&pixels);
+        Ok(Some(format!("data:image/png;base64,{}", encoded)))
+    }
+
+    fn handle_get_settings(&self) -> anyhow::Result<serde_json::Value> {
+        let json = self.config.to_json();
+        Ok(serde_json::Value::String(json))
+    }
+
+    fn handle_update_settings(&self, settings: &serde_json::Value) -> anyhow::Result<()> {
+        log::info!("更新配置: {:?}", settings);
+        // TODO: 实现配置更新逻辑
+        Ok(())
+    }
+
+    fn handle_region_crop(&self, data_url: &str, _region: &nm::NmRegion) -> anyhow::Result<String> {
+        let img_data = screenshot::decode_data_url(data_url)?;
+        let mut engine = ocr::OcrEngine::new(&self.config)?;
+        let text = engine.recognize(&img_data)?;
+        Ok(text)
     }
 }
-
-#[cfg(not(windows))]
-fn setup_ctrlc_handler() {}

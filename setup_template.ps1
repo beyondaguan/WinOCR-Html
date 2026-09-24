@@ -86,7 +86,7 @@ $installButton.Add_Click({
         Expand-Archive -Path $tmpZip -DestinationPath $installDir -Force
         Remove-Item $tmpZip -ErrorAction SilentlyContinue
 
-        # 2. Register Native Host (manifest path -> absolute)
+        # 2. Register Native Host (manifest path -> absolute, fixed extension ID)
         $form.Text = "Registering native host..."
         $manifestTemp = "$env:TEMP\com.winocr_host.json"
         $exePath = "$installDir\extension\native_host\winocr_host.exe" -replace '\\', '/'
@@ -95,7 +95,8 @@ $installButton.Add_Click({
             description = "WinOCR-Html Native Host"
             path = $exePath
             type = "stdio"
-            allowed_origins = @("chrome-extension://*/")
+            # 扩展 manifest.json 含固定 key，ID 恒为 lakabkkdcnfpoeodnidihbcnlbjbnkdm
+            allowed_origins = @("chrome-extension://lakabkkdcnfpoeodnidihbcnlbjbnkdm/")
         } | ConvertTo-Json
         Set-Content -Path $manifestTemp -Value $manifest -Encoding ASCII
         reg add "HKCU\Software\Google\Chrome\NativeMessagingHosts\com.winocr_host" /ve /d "$manifestTemp" /f | Out-Null

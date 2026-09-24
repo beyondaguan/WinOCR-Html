@@ -27,3 +27,5 @@ release/
 # Temporary
 *.tmp
 *.bak
+# ---- extension signing key (never commit) ----
+*.pem

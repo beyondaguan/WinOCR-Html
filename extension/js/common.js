@@ -68,7 +68,7 @@
     srcLang: 'en',
     tgtLang: 'zh',
     displayMode: 'inline',        // 页面译文形态：'inline' 原地替换原文（默认）| 'bar' 常驻翻译栏 | 'bubble' 临时气泡
-    nativeHost: false,            // 是否连接原生宿主 com.winocr.host（仅外部截图记录回传需要；默认关）
+    nativeHost: false,            // 是否连接原生宿主 com.winocr_host（仅外部截图记录回传需要；默认关）
     hotkey: 'ctrl+shift+m',       // 原生宿主「截图」热键（扩展设置页可自由录入并同步给宿主）
     quitHotkey: 'ctrl+alt+q',     // 原生宿主「退出」热键（不能用裸 Esc，那会劫持全系统的 Esc）
     mymemoryEmail: '',            // MyMemory 可选邮箱：填了每日额度从 5000 提升到 50000 字符

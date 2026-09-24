@@ -3,12 +3,13 @@
 try { importScripts('js/common.js'); } catch (e) {}
 
 // --------------------- Native Messaging（可选，默认关闭） ---------------------
-// 原生宿主 com.winocr.host 仅用于「外部截图 / 记录回传」。未注册时 connectNative 会报
+// 原生宿主 com.winocr_host 仅用于「外部截图 / 记录回传」。未注册时 connectNative 会报
 // "Specified native messaging host not found"。因此：
 //   1) 默认不连接（设置里 nativeHost=false），纯浏览器使用完全不触发该报错；
 //   2) 失败时读取 chrome.runtime.lastError（抑制 "Unchecked runtime.lastError" 日志）；
 //   3) 不再无限重试（最多 3 次、5s 间隔），避免刷屏。
-const NATIVE_HOST = 'com.winocr.host';
+// 注意：必须与安装器注册的键名 com.winocr_host（下划线）一致
+const NATIVE_HOST = 'com.winocr_host';
 let port = null;
 let nativeEnabled = false;
 let nativeTried = 0;
